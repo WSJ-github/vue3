@@ -243,6 +243,8 @@ class MutableReactiveHandler extends BaseReactiveHandler {
   // 使用 for...in 循环
   // 使用 Object.entries()
   // 调用对象的迭代器方法
+
+  // 对象（Object/Array）的获取key的迭代方法
   ownKeys(target: Record<string | symbol, unknown>): (string | symbol)[] {
     track(
       target,
