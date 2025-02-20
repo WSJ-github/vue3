@@ -14,6 +14,7 @@ export class EffectScope {
   private _on = 0
   /**
    * @internal
+   * 存储该作用域下的所有effects
    */
   effects: ReactiveEffect[] = []
   /**
@@ -30,6 +31,7 @@ export class EffectScope {
   parent: EffectScope | undefined
   /**
    * record undetached scopes
+   * 存储子作用域
    * @internal
    */
   scopes: EffectScope[] | undefined

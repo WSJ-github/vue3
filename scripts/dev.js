@@ -12,26 +12,31 @@ import { createRequire } from 'node:module'
 import { parseArgs } from 'node:util'
 import { polyfillNode } from 'esbuild-plugin-polyfill-node'
 
-const require = createRequire(import.meta.url)
-const __dirname = dirname(fileURLToPath(import.meta.url))
+// import.meta.url 是当前模块的URL，即file:///Vue3/scripts/dev.js
+const require = createRequire(import.meta.url) // 创建一个require函数，用于动态解析CJS模块
+const __dirname = dirname(fileURLToPath(import.meta.url)) // 获取当前脚本所在的目录，即/Vue3/scripts
 
 const {
   values: { format: rawFormat, prod, inline: inlineDeps },
   positionals,
 } = parseArgs({
+  // 按照配置解析出命令行参数（process.argv...）
   allowPositionals: true,
   options: {
     format: {
+      // 产物格式
       type: 'string',
       short: 'f',
       default: 'global',
     },
     prod: {
+      // 是否为生产环境
       type: 'boolean',
       short: 'p',
       default: false,
     },
     inline: {
+      // 是否内联依赖
       type: 'boolean',
       short: 'i',
       default: false,
@@ -40,26 +45,29 @@ const {
 })
 
 const format = rawFormat || 'global'
-const targets = positionals.length ? positionals : ['vue']
+const targets = positionals.length ? positionals : ['vue'] // 目标包，默认是vue
 
 // resolve output
 const outputFormat = format.startsWith('global')
-  ? 'iife'
+  ? 'iife' // 产物格式为iife，即浏览器中
   : format === 'cjs'
-    ? 'cjs'
-    : 'esm'
+    ? 'cjs' // 产物格式为cjs，即node中
+    : 'esm' // 产物格式为esm
 
 const postfix = format.endsWith('-runtime')
   ? `runtime.${format.replace(/-runtime$/, '')}`
   : format
 
-const privatePackages = fs.readdirSync('packages-private')
+const privatePackages = fs.readdirSync('packages-private') // 读取packages-private目录下的所有【文件/目录】信息
 
 for (const target of targets) {
   const pkgBase = privatePackages.includes(target)
     ? `packages-private`
     : `packages`
   const pkgBasePath = `../${pkgBase}/${target}`
+  // 动态解析pkgBasePath/package.json文件
+  // 为什么不直接用esm模块解析？
+  // 因为是不确定需要解析的模块位于哪个包中，所以需要动态解析，所以需要CJS的require
   const pkg = require(`${pkgBasePath}/package.json`)
   const outfile = resolve(
     __dirname,
@@ -67,6 +75,10 @@ for (const target of targets) {
       target === 'vue-compat' ? `vue` : target
     }.${postfix}.${prod ? `prod.` : ``}js`,
   )
+  //
+  // process.cwd()node进程运行时所在的工作目录，对应/Vue3/
+  // outfile是产物文件路径，对应/Vue3/packages/vue/dist/vue.global.js
+  // relative(a, b)用来计算a到b的相对路径，所以这里会返回packages/vue/dist/vue.global.js
   const relativeOutfile = relative(process.cwd(), outfile)
 
   // resolve externals
@@ -88,10 +100,11 @@ for (const target of targets) {
     }
 
     if (target === 'compiler-sfc') {
+      // require.resolve 动态解析【模块路径】
       const consolidatePkgPath = require.resolve(
         '@vue/consolidate/package.json',
         {
-          paths: [resolve(__dirname, `../packages/${target}/`)],
+          paths: [resolve(__dirname, `../packages/${target}/`)], // 从哪里开始解析
         },
       )
       const consolidateDeps = Object.keys(

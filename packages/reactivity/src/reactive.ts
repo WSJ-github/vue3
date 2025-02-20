@@ -97,9 +97,9 @@ export function reactive(target: object) {
   return createReactiveObject(
     target,
     false,
-    mutableHandlers,
-    mutableCollectionHandlers,
-    reactiveMap,
+    mutableHandlers, // 普通对象（Object/Array）的代理处理器
+    mutableCollectionHandlers, // 集合对象（Map/Set/WeakMap/WeakSet）的代理处理器
+    reactiveMap, // 全局储存依赖收集器（或者说副作用收集器） WeakMap<Target, any>
   )
 }
 
@@ -280,20 +280,22 @@ function createReactiveObject(
     return target
   }
   // target already has corresponding Proxy
+  // 全局代理map缓存，如果已经存在，则直接返回
   const existingProxy = proxyMap.get(target)
   if (existingProxy) {
     return existingProxy
   }
   // only specific value types can be observed.
-  const targetType = getTargetType(target)
+  const targetType = getTargetType(target) // 获取target的类型
   if (targetType === TargetType.INVALID) {
+    // 如果类型是无效的，则直接返回target
     return target
   }
   const proxy = new Proxy(
     target,
-    targetType === TargetType.COLLECTION ? collectionHandlers : baseHandlers,
+    targetType === TargetType.COLLECTION ? collectionHandlers : baseHandlers, // 集合对象使用集合处理器，普通对象使用普通处理器
   )
-  proxyMap.set(target, proxy)
+  proxyMap.set(target, proxy) // 将target和proxy的映射关系存储到全局代理map中
   return proxy
 }
 
@@ -376,7 +378,7 @@ export function isProxy(value: any): boolean {
  * @see {@link https://vuejs.org/api/reactivity-advanced.html#toraw}
  */
 export function toRaw<T>(observed: T): T {
-  const raw = observed && (observed as Target)[ReactiveFlags.RAW]
+  const raw = observed && (observed as Target)[ReactiveFlags.RAW] // 只有被reactive包裹的代理对象才有ReactiveFlags.RAW属性
   return raw ? toRaw(raw) : observed
 }
 

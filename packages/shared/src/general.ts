@@ -29,7 +29,6 @@ export const remove = <T>(arr: T[], el: T): void => {
     arr.splice(i, 1)
   }
 }
-
 const hasOwnProperty = Object.prototype.hasOwnProperty
 export const hasOwn = (
   val: object,

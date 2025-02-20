@@ -99,7 +99,7 @@ function createRef(rawValue: unknown, shallow: boolean) {
   if (isRef(rawValue)) {
     return rawValue
   }
-  return new RefImpl(rawValue, shallow)
+  return new RefImpl(rawValue, shallow) // ref实例对象
 }
 
 /**
@@ -108,7 +108,9 @@ function createRef(rawValue: unknown, shallow: boolean) {
 class RefImpl<T = any> {
   _value: T
   private _rawValue: T
-
+  // TODO:
+  // reactive转换的代理对象通过WeakMap<key, Map<key, dep>>方式收集依赖
+  // ref对象自己管理自己Dep对象依赖收集
   dep: Dep = new Dep()
 
   public readonly [ReactiveFlags.IS_REF] = true
@@ -116,7 +118,7 @@ class RefImpl<T = any> {
 
   constructor(value: T, isShallow: boolean) {
     this._rawValue = isShallow ? value : toRaw(value)
-    this._value = isShallow ? value : toReactive(value)
+    this._value = isShallow ? value : toReactive(value) // ref传入的是对象，那么转换为代理对象
     this[ReactiveFlags.IS_SHALLOW] = isShallow
   }
 
@@ -141,6 +143,7 @@ class RefImpl<T = any> {
       isReadonly(newValue)
     newValue = useDirectValue ? newValue : toRaw(newValue)
     if (hasChanged(newValue, oldValue)) {
+      // 因为不管set的值变没变其实都会进当前set拦截，所以这里过滤一下
       this._rawValue = newValue
       this._value = useDirectValue ? newValue : toReactive(newValue)
       if (__DEV__) {
@@ -152,7 +155,7 @@ class RefImpl<T = any> {
           oldValue,
         })
       } else {
-        this.dep.trigger()
+        this.dep.trigger() // 触发依赖
       }
     }
   }
@@ -337,6 +340,9 @@ export type ToRefs<T = any> = {
  * @see {@link https://vuejs.org/api/reactivity-utilities.html#torefs}
  */
 export function toRefs<T extends object>(object: T): ToRefs<T> {
+  // 代理对象有__v_raw属性，应该是指向原始对象的
+  // 收集watch依赖的时候，也是用原始对象获取对应weakmap
+  // 开发环境如果传入非proxy对象会警告
   if (__DEV__ && !isProxy(object)) {
     warn(`toRefs() expects a reactive object but received a plain one.`)
   }
@@ -465,9 +471,13 @@ function propertyToRef(
   defaultValue?: unknown,
 ) {
   const val = source[key]
+  // 用ref(<对象>)创建的ref对象会返回true
   return isRef(val)
     ? val
-    : (new ObjectRefImpl(source, key, defaultValue) as any)
+    : // ObjectRefImpl一个ref代理实例，实例中保存source&key，访问实例的value会触发get，然后通过缓存的source&key访问原代理对象上的属性
+      // 这个过程已经在原代理对象上收集了依赖；设置实例的value会触发set，然后通过缓存的source&key设置原代理对象上的属性，触发依赖更新
+      // 如果访问实例的dep，会通过getDepFromReactive获取[代理对象.__v_raw][key]对应weakmap收集的依赖
+      (new ObjectRefImpl(source, key, defaultValue) as any)
 }
 
 /**

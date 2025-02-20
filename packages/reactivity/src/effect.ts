@@ -42,13 +42,13 @@ export enum EffectFlags {
   /**
    * ReactiveEffect only
    */
-  ACTIVE = 1 << 0,
-  RUNNING = 1 << 1,
-  TRACKING = 1 << 2,
-  NOTIFIED = 1 << 3,
-  DIRTY = 1 << 4,
-  ALLOW_RECURSE = 1 << 5,
-  PAUSED = 1 << 6,
+  ACTIVE = 1 << 0, // 00000001 活跃
+  RUNNING = 1 << 1, // 00000010 运行
+  TRACKING = 1 << 2, // 00000100 追踪
+  NOTIFIED = 1 << 3, // 00001000 通知
+  DIRTY = 1 << 4, // 00010000 脏
+  ALLOW_RECURSE = 1 << 5, // 00100000 允许递归
+  PAUSED = 1 << 6, // 01000000 暂停
 }
 
 /**
@@ -59,12 +59,12 @@ export interface Subscriber extends DebuggerOptions {
    * Head of the doubly linked list representing the deps
    * @internal
    */
-  deps?: Link
+  deps?: Link // 订阅者链表的头节点
   /**
    * Tail of the same list
    * @internal
    */
-  depsTail?: Link
+  depsTail?: Link // 订阅者链表的尾节点
   /**
    * @internal
    */
@@ -83,6 +83,7 @@ export interface Subscriber extends DebuggerOptions {
 
 const pausedQueueEffects = new WeakSet<ReactiveEffect>()
 
+// ReactiveEffect 实现了 Subscriber 接口，所以每个effect实例都是一个订阅者
 export class ReactiveEffect<T = any>
   implements Subscriber, ReactiveEffectOptions
 {
@@ -96,6 +97,7 @@ export class ReactiveEffect<T = any>
   depsTail?: Link = undefined
   /**
    * @internal
+   * 1 ｜ 4 = 5，即默认是0101，既是active又是tracking状态（因为他们状态位置都是1）
    */
   flags: EffectFlags = EffectFlags.ACTIVE | EffectFlags.TRACKING
   /**
@@ -119,7 +121,7 @@ export class ReactiveEffect<T = any>
   }
 
   pause(): void {
-    this.flags |= EffectFlags.PAUSED
+    this.flags |= EffectFlags.PAUSED // EffectFlags.PAUSED = 1000000
   }
 
   resume(): void {
@@ -147,6 +149,7 @@ export class ReactiveEffect<T = any>
     }
   }
 
+  // 运行effect，类似于Vue2 Watcher的run方法
   run(): T {
     // TODO cleanupEffect
 
@@ -158,10 +161,10 @@ export class ReactiveEffect<T = any>
     this.flags |= EffectFlags.RUNNING
     cleanupEffect(this)
     prepareDeps(this)
-    const prevEffect = activeSub
-    const prevShouldTrack = shouldTrack
-    activeSub = this
-    shouldTrack = true
+    const prevEffect = activeSub // 保存上一个活跃的effect
+    const prevShouldTrack = shouldTrack // 保存上一个shouldTrack的值
+    activeSub = this // 将当前effect设置为活跃的effect
+    shouldTrack = true // 设置shouldTrack为true
 
     try {
       return this.fn()
@@ -172,10 +175,10 @@ export class ReactiveEffect<T = any>
             'this is likely a Vue internal bug.',
         )
       }
-      cleanupDeps(this)
-      activeSub = prevEffect
-      shouldTrack = prevShouldTrack
-      this.flags &= ~EffectFlags.RUNNING
+      cleanupDeps(this) // 清理依赖
+      activeSub = prevEffect // 恢复上一个活跃的effect
+      shouldTrack = prevShouldTrack // 恢复上一个shouldTrack的值
+      this.flags &= ~EffectFlags.RUNNING // 清除running标志
     }
   }
 
@@ -302,8 +305,10 @@ function prepareDeps(sub: Subscriber) {
   for (let link = sub.deps; link; link = link.nextDep) {
     // set all previous deps' (if any) version to -1 so that we can track
     // which ones are unused after the run
+    // 将所有先前依赖的版本设置为-1，以便我们可以在运行后跟踪哪些依赖未被使用。
     link.version = -1
     // store previous active sub if link was being used in another context
+    // 如果link在另一个上下文中被使用，则存储先前的活跃订阅
     link.prevActiveLink = link.dep.activeLink
     link.dep.activeLink = link
   }
