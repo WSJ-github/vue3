@@ -91,6 +91,8 @@ export type Reactive<T> = UnwrapNestedRefs<T> &
 export function reactive<T extends object>(target: T): Reactive<T>
 export function reactive(target: object) {
   // if trying to observe a readonly proxy, return the readonly version.
+  // 如果尝试观察一个只读代理，则返回只读版本
+  // 即有__v_isReadonly标识的代理对象
   if (isReadonly(target)) {
     return target
   }
@@ -273,6 +275,7 @@ function createReactiveObject(
   }
   // target is already a Proxy, return it.
   // exception: calling readonly() on a reactive object
+  // 已经是代理，直接返回
   if (
     target[ReactiveFlags.RAW] &&
     !(isReadonly && target[ReactiveFlags.IS_REACTIVE])
@@ -280,15 +283,16 @@ function createReactiveObject(
     return target
   }
   // target already has corresponding Proxy
-  // 全局代理map缓存，如果已经存在，则直接返回
+  // TODO: 全局代理map缓存，如果已经存在，则直接返回
+  // 注意：本身target原对象上访问不到它自己的代理对象，因为都存到proxyMap中，通过下面这种方式取
   const existingProxy = proxyMap.get(target)
   if (existingProxy) {
     return existingProxy
   }
   // only specific value types can be observed.
-  const targetType = getTargetType(target) // 获取target的类型
+  // TODO: 如果target是无效的，则直接返回target
+  const targetType = getTargetType(target)
   if (targetType === TargetType.INVALID) {
-    // 如果类型是无效的，则直接返回target
     return target
   }
   const proxy = new Proxy(
@@ -377,6 +381,7 @@ export function isProxy(value: any): boolean {
  * @param observed - The object for which the "raw" value is requested.
  * @see {@link https://vuejs.org/api/reactivity-advanced.html#toraw}
  */
+// 可能出现一种情况：代理套代理的情况，所以递归获取最初的原对象
 export function toRaw<T>(observed: T): T {
   const raw = observed && (observed as Target)[ReactiveFlags.RAW] // 只有被reactive包裹的代理对象才有ReactiveFlags.RAW属性
   return raw ? toRaw(raw) : observed

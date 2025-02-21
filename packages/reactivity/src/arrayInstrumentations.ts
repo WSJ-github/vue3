@@ -24,7 +24,7 @@ export function shallowReadArray<T>(arr: T[]): T[] {
   // __DEV__ ? 'Array iterate' : '',
   // )
   // 开发环境建立arr[Symbol('Array iterate')]的依赖收集map？
-  // 使用特殊的 ARRAY_ITERATE_KEY 收集当前 effect
+  // TODO: 使用特殊的 ARRAY_ITERATE_KEY 收集当前 effect
   // 用于追踪会影响数组迭代结果的操作
   track((arr = toRaw(arr)), TrackOpTypes.ITERATE, ARRAY_ITERATE_KEY)
   return arr // 返回原数组
@@ -240,6 +240,7 @@ function iterator(
     iter.next = () => {
       const result = iter._next() // 获取当前迭代索引对应的值（原迭代器方法）
       if (result.value) {
+        // TODO:
         // 如果迭代元素是对象，那么转换为响应式对象（wrapValue对应toReactive对应reactive）
         // 遍历到哪些元素就转换哪些元素，lazy模式
         result.value = wrapValue(result.value)

@@ -64,6 +64,7 @@ class BaseReactiveHandler implements ProxyHandler<Target> {
     } else if (key === ReactiveFlags.IS_SHALLOW) {
       return isShallow
     } else if (key === ReactiveFlags.RAW) {
+      // 没有实际设置ReactiveFlags.RAW，是通过代理拦截方式
       // ReactiveFlags.RAW = "__v_raw"
       if (
         receiver ===
@@ -91,6 +92,7 @@ class BaseReactiveHandler implements ProxyHandler<Target> {
     if (!isReadonly) {
       let fn: Function | undefined
       // arrayInstrumentations[key]对应数组一系列方法的重写（包含但不限于：迭代器方法、push、pop...）
+      // 调用对应方法，内部会进行依赖收集
       if (targetIsArray && (fn = arrayInstrumentations[key])) {
         return fn
       }
@@ -113,16 +115,20 @@ class BaseReactiveHandler implements ProxyHandler<Target> {
       // 如果这是一个包装了ref的proxy代理，则返回使用原始ref作为接收器的方法，以便在所有
       // 类方法中不需要调用`toRaw`对ref进行转换
       // 相当于访问target.key，然后触发ref的依赖收集，即[target, value]的收集
+      // 如果target是代理，但是key不是value，那么返回ref实例对象上对应的属性，但是应该是没有依赖收集的
       isRef(target) ? target : receiver,
     )
 
-    // 过滤掉Symbol和某些原型属性，即不用操作
+    // 过滤掉Symbol和某些原型属性，即直接返回（不需要收集依赖）
     if (isSymbol(key) ? builtInSymbols.has(key) : isNonTrackableKeys(key)) {
       return res
     }
 
     if (!isReadonly) {
       // TODO: 依赖收集
+      // 如果target是ref实例，那么这里也会收集依赖，以[ref实例, key]的方式把当前依赖存入dep
+      // 然后这里ref实例内部收集了一份dep，这里也收集了一份[ref实例, key]存于WeakMap<target, Map<key, Dep>>结构的dep
+      // 所以ref对象也可以有代理，然后通过代理set的话，会触发两份dep收集的依赖，当然effect会去重
       track(target, TrackOpTypes.GET, key) // WeakMap<target, Map<key, Dep>>收集effect依赖
     }
 
@@ -136,6 +142,7 @@ class BaseReactiveHandler implements ProxyHandler<Target> {
       // TODO:
       // 如果是数组，并且key是索引值，那么取出的ref不自动解包，而是直接返回
       // 否则，返回ref.value，即自动解包
+      // 解包访问ref.value，会触发ref.dep收集的依赖
       return targetIsArray && isIntegerKey(key) ? res : res.value
     }
 
@@ -197,12 +204,17 @@ class MutableReactiveHandler extends BaseReactiveHandler {
       isArray(target) && isIntegerKey(key)
         ? Number(key) < target.length
         : hasOwn(target, key)
+
+    // TODO: 实际set
     const result = Reflect.set(
       target,
       key,
       value,
-      isRef(target) ? target : receiver, // 如果被代理的原对象是一个ref对象，那么此时set的应该是ref对象上的属性
+      // 如果被代理的原对象是一个ref对象，那么此时set的应该是ref对象上的属性
+      // 所以如果key是'value'的话，那么会触发ref.dep收集的依赖
+      isRef(target) ? target : receiver,
     )
+
     // don't trigger if target is something up in the prototype chain of original
     // 如果target是原始对象的prototype链上的某个对象，则不触发（因为此时receiver对应的是原始对象，或者原始对象的代理，而target的代理只是原始对象原型链上的“父元素”罢了）
     if (target === toRaw(receiver)) {

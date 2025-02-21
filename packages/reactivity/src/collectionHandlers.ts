@@ -98,14 +98,17 @@ function createInstrumentations(
   shallow: boolean,
 ): Instrumentations {
   const instrumentations: Instrumentations = {
+    // 给当前key对应的代理/raw 收集依赖
+    // 用rawTarget[key/rawKey]获取值，如果获取到值，那么把该值转换为响应性
     get(this: MapTypes, key: unknown) {
       // #1772: readonly(reactive(Map)) should return readonly + reactive version
       // of the value
-      const target = this[ReactiveFlags.RAW]
-      const rawTarget = toRaw(target)
+      const target = this[ReactiveFlags.RAW] // this对应代理对象（map/set/weakmap/weakset对应的代理对象）
+      const rawTarget = toRaw(target) // 原对象（即原map/set/weakmap/weakset）
       const rawKey = toRaw(key)
       if (!readonly) {
         if (hasChanged(key, rawKey)) {
+          // 如果key是代理对象，给[map原对象, key(代理对象)]收集依赖
           track(rawTarget, TrackOpTypes.GET, key)
         }
         track(rawTarget, TrackOpTypes.GET, rawKey)
@@ -113,7 +116,7 @@ function createInstrumentations(
       const { has } = getProto(rawTarget)
       const wrap = shallow ? toShallow : readonly ? toReadonly : toReactive
       if (has.call(rawTarget, key)) {
-        return wrap(target.get(key))
+        return wrap(target.get(key)) // 获取原对象上的值，比如map.get(key)，然后把值转换为响应式的
       } else if (has.call(rawTarget, rawKey)) {
         return wrap(target.get(rawKey))
       } else if (target !== rawTarget) {
@@ -128,13 +131,14 @@ function createInstrumentations(
       return Reflect.get(target, 'size', target)
     },
     has(this: CollectionTypes, key: unknown): boolean {
-      const target = this[ReactiveFlags.RAW]
-      const rawTarget = toRaw(target)
+      const target = this[ReactiveFlags.RAW] // 集合原对象
+      const rawTarget = toRaw(target) // 集合【最初】原对象（因为是递归toRaw），正常情况下就一层，所以和target是相同的
       const rawKey = toRaw(key)
       if (!readonly) {
         if (hasChanged(key, rawKey)) {
           track(rawTarget, TrackOpTypes.HAS, key)
         }
+        // 触发依赖收集(不管实际对象上有没有key对应的元素，都触发依赖收集)
         track(rawTarget, TrackOpTypes.HAS, rawKey)
       }
       return key === rawKey
@@ -171,7 +175,7 @@ function createInstrumentations(
               value = toRaw(value)
             }
             const target = toRaw(this)
-            const proto = getProto(target)
+            const proto = getProto(target) // Reflect.getPrototypeOf(target)
             const hadKey = proto.has.call(target, value)
             if (!hadKey) {
               target.add(value)
@@ -185,7 +189,9 @@ function createInstrumentations(
             }
             const target = toRaw(this)
             const { has, get } = getProto(target)
-
+            // 判断原对象（map/set/weakmap/weakset）上是否存在key，这里以map为例
+            // 判断原map上是否有当前key，或者当前key的raw值
+            // 然后触发对应key的依赖（此时key可能是代理对象，也可能是raw对象）
             let hadKey = has.call(target, key)
             if (!hadKey) {
               key = toRaw(key)
@@ -261,7 +267,9 @@ function createInstrumentations(
 }
 
 function createInstrumentationGetter(isReadonly: boolean, shallow: boolean) {
-  const instrumentations = createInstrumentations(isReadonly, shallow)
+  // TODO:
+  // 把集合对象（Map/Set/WeakMap/WeakSet）的一系列方法封装起来（内部包含一些依赖收集，触发依赖的代码）
+  const instrumentations = createInstrumentations(isReadonly, shallow) // 核心代码
 
   return (
     target: CollectionTypes,
@@ -278,14 +286,16 @@ function createInstrumentationGetter(isReadonly: boolean, shallow: boolean) {
 
     return Reflect.get(
       hasOwn(instrumentations, key) && key in target
-        ? instrumentations
-        : target,
+        ? instrumentations // 优先返回封装对象
+        : target, // 如果封装对象上没有，则返回原对象
       key,
       receiver,
     )
   }
 }
 
+// 集合对象（Map/Set/WeakMap/WeakSet）的代理处理器
+// 也是只暴露出get拦截器
 export const mutableCollectionHandlers: ProxyHandler<CollectionTypes> = {
   get: /*@__PURE__*/ createInstrumentationGetter(false, false),
 }

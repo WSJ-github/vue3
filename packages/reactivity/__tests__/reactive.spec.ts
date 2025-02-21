@@ -27,6 +27,7 @@ describe('reactivity/reactive', () => {
     // has
     expect('foo' in observed).toBe(true)
     // ownKeys
+    // observed如果是数组那么track key = 'length'，这里是对象track ITERATE_KEY
     expect(Object.keys(observed)).toEqual(['foo'])
   })
 
@@ -36,11 +37,16 @@ describe('reactivity/reactive', () => {
     expect(isReactive(reactiveObj)).toBe(true)
     // read prop of reactiveObject will cause reactiveObj[prop] to be reactive
     // @ts-expect-error
+    // 访问原型会直接返回，不会收集依赖
     const prototype = reactiveObj['__proto__']
     const otherObj = { data: ['a'] }
     expect(isReactive(otherObj)).toBe(false)
     const reactiveOther = reactive(otherObj)
     expect(isReactive(reactiveOther)).toBe(true)
+    // 上一步访问定义reactive(otherObj)时，内部.data对应的数组还没被包装成代理
+    // 因为是lazy模式加载的，下面访问reactiveOther.data的时候，先收集依赖，
+    // 然后因为值是对象，所以如果proxyMap中没有这个对象关联的proxy，那么创建proxy并返回
+    // 接着访问reactiveOther.data[0]的时候，会触发proxy的get拦截，然后触发依赖收集，收集到[reactiveOther.data, 0]dep中
     expect(reactiveOther.data[0]).toBe('a')
   })
 
@@ -54,21 +60,27 @@ describe('reactivity/reactive', () => {
     const observed = reactive(original)
     expect(isReactive(observed.nested)).toBe(true)
     expect(isReactive(observed.array)).toBe(true)
+    // [observed, array] & [observed.array, 0]都是代理
+    // 内部嵌套的合法对象（非冻结，非只读），访问时都会把原对象转换为代理，然后再进一步访问，此时刚转换的代理也能收集到依赖
     expect(isReactive(observed.array[0])).toBe(true)
   })
 
   test('observing subtypes of IterableCollections(Map, Set)', () => {
     // subtypes of Map
     class CustomMap extends Map {}
+    // Object.prototype.toString.call(new CustomMap()) -> [object Map]
     const cmap = reactive(new CustomMap())
 
     expect(cmap).toBeInstanceOf(Map)
     expect(isReactive(cmap)).toBe(true)
 
+    // trigger [toRaw(cmap), 'key']（但是实际没有，因为都没有收集依赖，所以targetMap中没记录）
     cmap.set('key', {})
+    // track [cmap, 'key']，依赖收集，返回{}的代理对象（被reactive包裹）
     expect(isReactive(cmap.get('key'))).toBe(true)
 
     // subtypes of Set
+    // Set也是同理，因为对应的代理handler都是mutableCollectionHandlers
     class CustomSet extends Set {}
     const cset = reactive(new CustomSet())
 
@@ -76,14 +88,16 @@ describe('reactivity/reactive', () => {
     expect(isReactive(cset)).toBe(true)
 
     let dummy
+    // 会先触发 track [cset, 'value']，依赖收集，然后才是真正调用cset.has('value')，返回false
     effect(() => (dummy = cset.has('value')))
     expect(dummy).toBe(false)
-    cset.add('value')
+    cset.add('value') // trigger
     expect(dummy).toBe(true)
     cset.delete('value')
     expect(dummy).toBe(false)
   })
 
+  // 同理（类似Map/Set）
   test('observing subtypes of WeakCollections(WeakMap, WeakSet)', () => {
     // subtypes of WeakMap
     class CustomMap extends WeakMap {}
@@ -116,13 +130,16 @@ describe('reactivity/reactive', () => {
     const original: any = { foo: 1 }
     const observed = reactive(original)
     // set
-    observed.bar = 1
+    observed.bar = 1 // trigger and Reflect.set实际设置值
     expect(observed.bar).toBe(1)
     expect(original.bar).toBe(1)
     // delete
+    // 触发 handler.deleteProperty
+    // 触发 trigger [toRaw(observed), 'foo']
+    // 触发 track [toRaw(observed), ITERATE_KEY]（ITERATE_KEY是对象迭代过程中负责收集依赖的key）
     delete observed.foo
-    expect('foo' in observed).toBe(false)
-    expect('foo' in original).toBe(false)
+    expect('foo' in observed).toBe(false) // 触发 handler.has track
+    expect('foo' in original).toBe(false) // 触发 handler.has track
   })
 
   test('original value change should reflect in observed value (Object)', () => {
@@ -131,32 +148,34 @@ describe('reactivity/reactive', () => {
     // set
     original.bar = 1
     expect(original.bar).toBe(1)
+    // track [original, 'bar']，Reflect.get从原对象上获取值
+    // 但是因为上面是直接在原对象上设置值，所以不会被代理拦截器拦截到设置值，所以不会触发trigger
     expect(observed.bar).toBe(1)
     // delete
-    delete original.foo
+    delete original.foo // 同理，在原对象上增删值，不会被代理拦截，所以不会trigger
     expect('foo' in original).toBe(false)
-    expect('foo' in observed).toBe(false)
+    expect('foo' in observed).toBe(false) // track
   })
 
   test('setting a property with an unobserved value should wrap with reactive', () => {
     const observed = reactive<{ foo?: object }>({})
     const raw = {}
-    observed.foo = raw
-    expect(observed.foo).not.toBe(raw)
-    expect(isReactive(observed.foo)).toBe(true)
+    observed.foo = raw // handler.set -> trigger(实际因为内部直接return) -> Reflect.set
+    expect(observed.foo).not.toBe(raw) // 因为此时返回的是raw的代理对象
+    expect(isReactive(observed.foo)).toBe(true) // Reflect.get获取原对象 -> track收集依赖 -> reactive(raw)
   })
 
   test('observing already observed value should return same Proxy', () => {
     const original = { foo: 1 }
     const observed = reactive(original)
-    const observed2 = reactive(observed)
+    const observed2 = reactive(observed) // 通过ReactiveFlags.RAW和ReactiveFlags.IS_REACTIVE标识
     expect(observed2).toBe(observed)
   })
 
   test('observing the same value multiple times should return same Proxy', () => {
     const original = { foo: 1 }
     const observed = reactive(original)
-    const observed2 = reactive(original)
+    const observed2 = reactive(original) // 通过reactiveMap.get(target)全局获取已经创建的代理对象返回
     expect(observed2).toBe(observed)
   })
 
@@ -165,9 +184,16 @@ describe('reactivity/reactive', () => {
     const original2 = { bar: 2 }
     const observed = reactive(original)
     const observed2 = reactive(original2)
-    observed.bar = observed2
-    expect(observed.bar).toBe(observed2)
-    expect(original.bar).toBe(original2)
+    observed.bar = observed2 // Reflect.set(raw(observed), 'bar', raw(observed2))
+    // Reflect.get(raw(observed), 'bar') -> 获得raw(observed2) -> reactive(raw(observed2)) -> reactiveMap.get(raw(observed2))
+    expect(observed.bar).toBe(observed2) // 1
+    expect(original.bar).toBe(original2) // 2
+    // 总结：两个代理对象，一个作为另一个的嵌套属性，此时原对象结构是没有变化的，即代理维护的原对象上的结构全是raw的方式，即原对象结构，不会被污染，不会出现原对象树上出现某个属性是代理
+    // 然后访问的时候分为两种方式，即上面的1&2
+    // 1. 通过代理访问属性，通过Reflect.get获取raw(observed2)，然后触发track，接着返回reactive(raw(observed2))，最后因为已经创建过对应原对象的代理了，所以从reactiveMap.get(raw(observed2))获取把该对象代理返回
+    // 2. 通过原对象访问属性，直接返回原对象
+
+    // TODO:对象树没有被污染， 而且通过reactiveMap全局缓存，所以每个对象只会创建一次代理，本身代理访问对象类型的属性时就会把该对象用reactive包装后返回...
   })
 
   // #1246
