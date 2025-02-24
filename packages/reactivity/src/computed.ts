@@ -52,6 +52,7 @@ export class ComputedRefImpl<T = any> implements Subscriber {
   /**
    * @internal
    */
+  //  computed和ref实例一样，内部自己维护一个dep对象
   readonly dep: Dep = new Dep(this)
   /**
    * @internal
@@ -136,6 +137,9 @@ export class ComputedRefImpl<T = any> implements Subscriber {
           key: 'value',
         })
       : this.dep.track()
+    // 判断是否需要刷新（即dirty标识）
+    // 如果需要，那么计算出最新值，并且让响应性数据收集当前computedRef依赖
+    // 如果不需要，那么直接返回缓存值
     refreshComputed(this)
     // sync version after evaluation
     if (link) {
@@ -209,6 +213,7 @@ export function computed<T>(
     setter = getterOrOptions.set
   }
 
+  // 所以本质上computed也是类ref的实现
   const cRef = new ComputedRefImpl(getter, setter, isSSR)
 
   if (__DEV__ && debugOptions && !isSSR) {

@@ -373,10 +373,11 @@ export function refreshComputed(computed: ComputedRefImpl): undefined {
   ) {
     return
   }
-  computed.flags &= ~EffectFlags.DIRTY
+  computed.flags &= ~EffectFlags.DIRTY // 清除dirty标志
 
   // Global version fast path when no reactive changes has happened since
   // last refresh.
+  // 当自上次刷新以来没有发生任何反应变化时，全局版本快速路径。
   if (computed.globalVersion === globalVersion) {
     return
   }

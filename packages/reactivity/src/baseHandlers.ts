@@ -66,6 +66,9 @@ class BaseReactiveHandler implements ProxyHandler<Target> {
     } else if (key === ReactiveFlags.RAW) {
       // 没有实际设置ReactiveFlags.RAW，是通过代理拦截方式
       // ReactiveFlags.RAW = "__v_raw"
+      // TODO:
+      // 因为receiver可能是以该代理作为原型的普通对象，所以就会出现receiver !== proxyMap(target)的情况
+      // 对应测试文件(reactive.spec.ts)的test('toRaw on object using reactive as prototype')
       if (
         receiver ===
           (isReadonly
@@ -79,6 +82,9 @@ class BaseReactiveHandler implements ProxyHandler<Target> {
         // receiver is not the reactive proxy, but has the same prototype
         // this means the receiver is a user proxy of the reactive proxy
         // 如果receiver不是代理对象，但是有相同的prototype，则receiver是代理对象
+        // TODO:
+        // 对应测试文件(reactive.spec.ts)的test('toRaw on user Proxy wrapping reactive')
+        // 代理包代理，它们的原型都是相同的
         Object.getPrototypeOf(target) === Object.getPrototypeOf(receiver) // 普通对象和它的代理对象的prototype是相同的
       ) {
         return target // 返回原始对象（代理上的__v_raw对应就是原对象）
@@ -244,6 +250,7 @@ class MutableReactiveHandler extends BaseReactiveHandler {
 
   has(target: Record<string | symbol, unknown>, key: string | symbol): boolean {
     const result = Reflect.has(target, key)
+    // 如果key不是Symbol，或者key不是内置Symbol，那么收集依赖
     if (!isSymbol(key) || !builtInSymbols.has(key)) {
       track(target, TrackOpTypes.HAS, key)
     }

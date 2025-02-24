@@ -201,10 +201,15 @@ describe('reactivity/reactive', () => {
     const observed = reactive({ foo: 1 })
     const original = Object.create(observed)
     let dummy
+    // 因为original原对象上没有foo属性，所以往原型上找，触发observed get（只是receiver指向original罢了）
+    // track [raw(observed), foo]
     effect(() => (dummy = original.foo))
     expect(dummy).toBe(1)
     observed.foo = 2
     expect(dummy).toBe(2)
+
+    // 因为original原对象上没有foo属性，首次设置属性的时候会触发原型代理对象上的set handler（当然实际还是Reflect.set还是会正确把属性设置到receiver（即original）上的）
+    // 当然并不会触发trigger [raw(observed), foo]，因为条件target === toRaw(receiver)不成立
     original.foo = 3
     expect(dummy).toBe(2)
     original.foo = 4
@@ -214,6 +219,7 @@ describe('reactivity/reactive', () => {
   test('toRaw', () => {
     const original = { foo: 1 }
     const observed = reactive(original)
+    // 递归取ReactiveFlags.RAW，直到取到原始对象，这里其实会触发observed get handler，对key为ReactiveFlags.RAW会做特殊处理
     expect(toRaw(observed)).toBe(original)
     expect(toRaw(original)).toBe(original)
   })
@@ -222,6 +228,9 @@ describe('reactivity/reactive', () => {
     const original = { foo: 1 }
     const observed = reactive(original)
     const inherted = Object.create(observed)
+    // toRaw(inherted) -> 内部访问inherted[ReactiveFlags.RAW]，因为原对象上没有这个属性，所以去原型对象上找
+    // 确实触发了observed get handler，但是getter中会判断receiver !== proxyMap(target)，所以不会返回target，而是返回undefined
+    // 所以最终toRaw函数返回inherted本身
     expect(toRaw(inherted)).toBe(inherted)
   })
 
@@ -230,18 +239,29 @@ describe('reactivity/reactive', () => {
     const re = reactive(original)
     const obj = new Proxy(re, {})
     const raw = toRaw(obj)
+    // 代理包代理的情况
+    // Object.getPrototypeOf(<任意代理>)都是相同的
+    // 而且每一层代理的get handler都会触发，所以最终拿到的是原始对象
     expect(raw).toBe(original)
   })
 
   test('should not unwrap Ref<T>', () => {
+    // reactive代理中target是ref的情况
     const observedNumberRef = reactive(ref(1))
     const observedObjectRef = reactive(ref({ foo: 1 }))
 
+    // isRef(observedNumberRef), 访问最外层代理的ReactiveFlags.IS_REF属性
+    // 该属性key在外层代理geth（get handler简写）上没有特殊处理
+    // 所以会实际触发Reflect.get(target（对应ref对象）, key（ReactiveFlags.IS_REF）, receiver（内部处理了，也对应ref对象）)
+    // 因此最终访问的是ref对象上的ReactiveFlags.IS_REF属性，因此返回true
+    // 注意：看源码，好像也会触发track [ref对象, ReactiveFlags.IS_REF]的依赖收集...
     expect(isRef(observedNumberRef)).toBe(true)
     expect(isRef(observedObjectRef)).toBe(true)
   })
 
   test('should unwrap computed refs', () => {
+    // computed结构和ref返回差不多（类ref）
+    // 因为isRef(a) = true
     // readonly
     const a = computed(() => 1)
     // writable
@@ -251,6 +271,11 @@ describe('reactivity/reactive', () => {
     })
     const obj = reactive({ a, b })
     // check type
+    // obj.a，会走 obj geth，对于Reflect.get返回值是ref的（即__v_isRef = true）对象（非数组），那么会自动解包
+    // 所以不需要obj.a.value，直接obj.a即可获取到a.value，然后就走ref内部访问器方法
+    // track [raw(obj), a]（对应weakMap<target, Map<key, Dep>>结构，即全局targetMap）
+    // track [a, value]（当然这里其实对应的数据结构是ref实例对象，ref.dep）
+    // 猜测：如果computed getter函数中有响应性变量，那这些变量既能收集到computed本身effect，也能收集到外层effect（就像vue2中computed属性的访问器一样，触发computedWatcher.evaluate和depend一样）
     obj.a + 1
     obj.b + 1
     expect(typeof obj.a).toBe(`number`)
@@ -262,13 +287,24 @@ describe('reactivity/reactive', () => {
     const bar = ref(1)
     const observed = reactive({ a: foo })
     const dummy = computed(() => observed.a)
+    // track [raw(observed), a]
+    // track [foo, value]
+    // 都能收集到computed effect?
+    // 都能收集到外层effect?
+    // 还是说vue3中的处理方式是computed对象本身去收集外层依赖，然后如果trigger[raw(observed), a]的时候会先触发computed effect，然后接着computed本身触发外层依赖？
     expect(dummy.value).toBe(0)
 
     // @ts-expect-error
+    // trigger [raw(observed), a]，ref替换
+    // computed effect 标识 computed dirty标识为true，外层effect执行？
+    // 触发track [bar, value]，收集依赖
+    // 那原依赖怎么卸载？？？（vue2是通过在watcher中记录新旧dep list&map，通过每次watcher.getter执行时重新收集依赖后续来进行的）
     observed.a = bar
+    // computed effect是lazy的
+    // 下面获取dummy.value，触发computed刷新值，真正track [bar, value]
     expect(dummy.value).toBe(1)
 
-    bar.value++
+    bar.value++ // trigger [bar, value]，computed dirty
     expect(dummy.value).toBe(2)
   })
 
@@ -298,6 +334,7 @@ describe('reactivity/reactive', () => {
     assertValue(bn)
 
     // built-ins should work and return same value
+    // 内置对象，返回本身
     const p = Promise.resolve()
     expect(reactive(p)).toBe(p)
     const r = new RegExp('')
@@ -309,6 +346,7 @@ describe('reactivity/reactive', () => {
   test('markRaw', () => {
     const obj = reactive({
       foo: { a: 1 },
+      // 对象定义ReactiveFlags.SKIP标识，所以我们访问obj.bar的时候，会直接返回bar原对象，而不是原对象的代理
       bar: markRaw({ b: 2 }),
     })
     expect(isReactive(obj.foo)).toBe(true)
@@ -353,11 +391,13 @@ describe('reactivity/reactive', () => {
     const obj = reactive({ [key]: 1 }) as { [key]?: 1 }
     let dummy
     effect(() => {
+      // obj handler.has -> track(obj, key)
+      // 非内置Symbol，也会收集依赖
       dummy = obj.hasOwnProperty(key)
     })
     expect(dummy).toBe(true)
 
-    delete obj[key]
+    delete obj[key] // Reflect.deleteProperty trigger
     expect(dummy).toBe(false)
   })
 
@@ -394,11 +434,15 @@ describe('reactivity/reactive', () => {
 
     const c = computed(() => {})
     expect(isProxy(c)).toBe(false)
+    // 补充
+    expect(isRef(c)).toBe(true)
   })
 
   test('The results of the shallow and readonly assignments are the same (Map)', () => {
-    const map = reactive(new Map())
+    const map = reactive(new Map()) // 代理对应的mutableCollectionHandlers
     map.set('foo', shallowReactive({ a: 2 }))
+    // 判断ReactiveFlags.IS_SHALLOW]标识，代理内部get handler会特殊处理
+    // track [raw(map), 'foo']
     expect(isShallow(map.get('foo'))).toBe(true)
 
     map.set('bar', readonly({ b: 2 }))
