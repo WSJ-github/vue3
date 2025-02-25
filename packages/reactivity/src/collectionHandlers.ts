@@ -45,6 +45,7 @@ function createIterableMethod(
     const isPair =
       method === 'entries' || (method === Symbol.iterator && targetIsMap)
     const isKeyOnly = method === 'keys' && targetIsMap
+    // 集合类型对象的keys/values/entries/Symbol.iterator方法，返回的是一个集合迭代器
     const innerIterator = target[method](...args)
     const wrap = isShallow ? toShallow : isReadonly ? toReadonly : toReactive
     !isReadonly &&
@@ -260,6 +261,7 @@ function createInstrumentations(
   ] as const
 
   iteratorMethods.forEach(method => {
+    // 封装集合相关迭代方法
     instrumentations[method] = createIterableMethod(method, readonly, shallow)
   })
 

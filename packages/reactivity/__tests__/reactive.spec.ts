@@ -440,20 +440,27 @@ describe('reactivity/reactive', () => {
 
   test('The results of the shallow and readonly assignments are the same (Map)', () => {
     const map = reactive(new Map()) // 代理对应的mutableCollectionHandlers
-    map.set('foo', shallowReactive({ a: 2 }))
+    map.set('foo', shallowReactive({ a: 2 })) // trigger [raw(map), 'foo']
     // 判断ReactiveFlags.IS_SHALLOW]标识，代理内部get handler会特殊处理
     // track [raw(map), 'foo']
+    // Reflect.get返回值isReactive了，所以不会再主动转换为代理对象
     expect(isShallow(map.get('foo'))).toBe(true)
 
-    map.set('bar', readonly({ b: 2 }))
+    map.set('bar', readonly({ b: 2 })) // trigger [raw(map), 'bar']
+    // 同理，只不过这次代理对象的handler是readonlyHandlers
     expect(isReadonly(map.get('bar'))).toBe(true)
   })
 
   test('The results of the shallow and readonly assignments are the same (Set)', () => {
     const set = reactive(new Set())
+    // trigger [raw(set), shallowReactive({ a: 2 })]
     set.add(shallowReactive({ a: 2 }))
+    // trigger [raw(set), readonly({ b: 2 })]
     set.add(readonly({ b: 2 }))
     let count = 0
+    // track [raw(set), ITERATE_KEY]
+    // 代理内部覆写迭代器next方法，每次迭代的值都会被转换为代理（toReactive/toReadonly/toShallow）
+    // 内部会调用set[Symbol.iterator]方法
     for (const i of set) {
       if (count === 0) expect(isShallow(i)).toBe(true)
       else expect(isReadonly(i)).toBe(true)
@@ -464,8 +471,15 @@ describe('reactivity/reactive', () => {
   // #11696
   test('should use correct receiver on set handler for refs', () => {
     const a = reactive(ref(1))
+    // Reflect.get(target(ref(1)), key(value), receiver(ref(1))
+    // track [ref(1), value]
+    // track [raw(a)（其实就是ref（1））, value]
+    // 上两者track的区别：依赖收集存储的地方不同，前者是ref.dep，后者是targetMap
     effect(() => a.value)
     expect(() => {
+      // trigger [ref(1), value]
+      // trigger [raw(a)（ref（1））, value]
+      // 都是触发同一个effect，所以这里应该是有批处理的
       a.value++
     }).not.toThrow()
   })
@@ -474,9 +488,12 @@ describe('reactivity/reactive', () => {
   test('should release property Dep instance if it no longer has subscribers', () => {
     let obj = { x: 1 }
     let a = reactive(obj)
+    // track [obj, x] -> targetMap(obj) -> Map<x, Dep> -> Dep收集effect依赖，effect.deps.push(Dep)？
     const e = effect(() => a.x)
     expect(targetMap.get(obj)?.get('x')).toBeTruthy()
+    // effect.stop() -> effect.deps.forEach(dep => dep.delete(effect)) ???
     e.effect.stop()
+    // 停止后，targetMap中对应的依赖被删除，所以此时空Dep？
     expect(targetMap.get(obj)?.get('x')).toBeFalsy()
   })
 
@@ -484,8 +501,14 @@ describe('reactivity/reactive', () => {
     const map = reactive(new Map())
     const c = computed(() => map.get(void 0))
 
+    // computed effect执行
+    // track [raw(map), void 0]
+    // raw(map).get(void 0) -> 返回void 0
+    // computed内部缓存gettter计算结果值并返回
     expect(c.value).toBe(void 0)
 
+    // trigger [raw(map), void 0] 触发computed effect
+    // computed标记为dirty，缓存失效？
     map.set(void 0, 1)
     expect(c.value).toBe(1)
   })
