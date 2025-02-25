@@ -126,6 +126,7 @@ class BaseReactiveHandler implements ProxyHandler<Target> {
     )
 
     // 过滤掉Symbol和某些原型属性，即直接返回（不需要收集依赖）
+    // TODO: ref.spec.ts的test('should keep symbols')
     if (isSymbol(key) ? builtInSymbols.has(key) : isNonTrackableKeys(key)) {
       return res
     }
@@ -149,6 +150,7 @@ class BaseReactiveHandler implements ProxyHandler<Target> {
       // 如果是数组，并且key是索引值，那么取出的ref不自动解包，而是直接返回
       // 否则，返回ref.value，即自动解包
       // 解包访问ref.value，会触发ref.dep收集的依赖
+      // ref.spec.ts的test('should NOT unwrap ref types nested inside arrays')
       return targetIsArray && isIntegerKey(key) ? res : res.value
     }
 
@@ -212,6 +214,8 @@ class MutableReactiveHandler extends BaseReactiveHandler {
         : hasOwn(target, key)
 
     // TODO: 实际set
+    // 挺有意思的：ref.spec.ts的test('ref wrapped in reactive should not track internal _value access')
+    // 对于reactive包ref对象，会触发两次effect，一次是在买呢的trigger，一次是ref.set时
     const result = Reflect.set(
       target,
       key,

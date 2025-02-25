@@ -29,6 +29,7 @@ describe('reactivity/ref', () => {
   it('should be reactive', () => {
     const a = ref(1)
     let dummy
+    // 应该是相当于函数外包了一层，返回enhance后的函数（这个函数执行过程中可以负责计数等操作，实际执行还是原函数）
     const fn = vi.fn(() => {
       dummy = a.value
     })
@@ -39,6 +40,7 @@ describe('reactivity/ref', () => {
     expect(fn).toHaveBeenCalledTimes(2)
     expect(dummy).toBe(2)
     // same value should not trigger
+    // 虽然会触发a set value，但是新旧_value相同，所以不会触发effect
     a.value = 2
     expect(fn).toHaveBeenCalledTimes(2)
   })
@@ -50,27 +52,38 @@ describe('reactivity/ref', () => {
     const fn = vi.fn(() => {
       dummy = b.value // this will observe both b.value and a.value access
     })
+    // track a.dep
+    // track [raw(b) === a, value]
     effect(fn)
     expect(fn).toHaveBeenCalledTimes(1)
     expect(dummy).toBe(1)
 
     // mutating a.value should only trigger effect once
+    // 翻译：修改a.value应该只触发一次effect
     a.value = 3
     expect(fn).toHaveBeenCalledTimes(2)
     expect(dummy).toBe(3)
 
+    // TODO:
     // mutating b.value should trigger the effect twice. (once for a.value change and once for b.value change)
+    // 翻译：修改b.value应该触发两次effect（一次是a.value变化，一次是b.value变化）
+    // 看来这里并没有沿用批处理的思想，确实是会有两次trigger，一次是b代理内部的，一次是a.value实际设置值时ref.set触发的
     b.value = 5
     expect(fn).toHaveBeenCalledTimes(4)
     expect(dummy).toBe(5)
   })
 
   it('should make nested properties reactive', () => {
+    // ref实例创建的时候，如果传入的是对象，那么会自动转换为代理对象，即a._value是传入对象对应的代理对象
+    // 原对象和代理对象映射关系记录到中proxyMap（防止下次重复创建）
     const a = ref({
       count: 1,
     })
     let dummy
     effect(() => {
+      // track a.dep
+      // a.value -> a._value
+      // track [raw(a._value), 'count']
       dummy = a.value.count
     })
     expect(dummy).toBe(1)
@@ -82,6 +95,7 @@ describe('reactivity/ref', () => {
     const a = ref()
     let dummy
     effect(() => {
+      // 即使a.value是undefined，也会track a.dep
       dummy = a.value
     })
     expect(dummy).toBe(undefined)
@@ -102,7 +116,18 @@ describe('reactivity/ref', () => {
     let dummy2: number
 
     effect(() => {
+      // track [obj, 'a']
+      // 因为target是对象不是数组，所以Reflect.get获取到ref时会自动解包拿到a.value
+      // track a.dep，收集到当前effect
       dummy1 = obj.a
+      // 分步骤来看
+      // 访问obj.b
+      // track [obj, 'b']
+      // 返回原对象，被reactive包裹，即最后返回的是代理对象
+      // track [raw(obj).b, 'c']
+      // 返回原对象，被reactive包裹，即最后返回的是代理对象
+      // Reflect.get获取到c的值是一个ref，同上理，自动解包获取a.value
+      // track a.dep，收集到当前effect（这里effect重复了，所以应该不会重复添加入a.dep？）
       dummy2 = obj.b.c
     })
 
@@ -120,7 +145,7 @@ describe('reactivity/ref', () => {
 
   it('should unwrap nested ref in types', () => {
     const a = ref(0)
-    const b = ref(a)
+    const b = ref(a) // ref嵌套ref，会直接返回入参ref，即此时b === a
 
     expect(typeof (b.value + 1)).toBe('number')
   })
@@ -130,27 +155,48 @@ describe('reactivity/ref', () => {
       b: ref(0),
     }
 
+    // c._value === reactive(a)
     const c = ref(a)
 
+    // 访问c.value
+    // track c.dep
+    // 返回代理对象，即c._value === reactive(a)
+    // 继续访问代理对象的.b
+    // track [a, 'b']
+    // 返回值b，b是ref对象
+    // 因为代理对象的target === a，是对象非数组，所以会自动解包
+    // track b.dep
+    // 返回 b.value，即ref值
     expect(typeof (c.value.b + 1)).toBe('number')
   })
 
   it('should NOT unwrap ref types nested inside arrays', () => {
+    // track arr.dep
+    // 返回reactive([1, ref(3)]) 记为代理对象a1
     const arr = ref([1, ref(3)]).value
+    // track [a1, 0]
+    // 获取值是基本类型，直接返回1
     expect(isRef(arr[0])).toBe(false)
+    // track [a1, 1]
+    // 获取值是ref对象，但是因为代理的target是数组且key是索引，所以不会自动解包
+    // 原代码：return targetIsArray && isIntegerKey(key) ? res : res.value
+    // 所以直接返回ref对象，isRef校验为true
     expect(isRef(arr[1])).toBe(true)
+    // 手动解包
+    // track ref.dep
     expect((arr[1] as Ref).value).toBe(3)
   })
 
   it('should unwrap ref types as props of arrays', () => {
     const arr = [ref(0)]
     const symbolKey = Symbol('')
+    // 抽象🥸
     arr['' as any] = ref(1)
     arr[symbolKey as any] = ref(2)
-    const arrRef = ref(arr).value
-    expect(isRef(arrRef[0])).toBe(true)
-    expect(isRef(arrRef['' as any])).toBe(false)
-    expect(isRef(arrRef[symbolKey as any])).toBe(false)
+    const arrRef = ref(arr).value // 获得reactive(arr)
+    expect(isRef(arrRef[0])).toBe(true) // 不自动解包 因为arr&索引key
+    expect(isRef(arrRef['' as any])).toBe(false) // 自动解包（注意对应解包的track ref.dep会收集依赖，访问了就会访问）
+    expect(isRef(arrRef[symbolKey as any])).toBe(false) // 自动解包
     expect(arrRef['' as any]).toBe(1)
     expect(arrRef[symbolKey as any]).toBe(2)
   })
@@ -169,11 +215,23 @@ describe('reactivity/ref', () => {
     expect(tupleRef.value[0]).toBe(1)
     tupleRef.value[1] += '1'
     expect(tupleRef.value[1]).toBe('11')
+    // tupleRef.value === tupleRef._value === reactive(tuple)
+    // track [tuple, 2]
+    // Reflect.get获取值res是对象
+    // 返回reactive(res)，记为a1
+    // a1.a
+    // track [a1, 'a']
+    // 返回a1.value，即1
     tupleRef.value[2].a++
     expect(tupleRef.value[2].a).toBe(2)
+    // 数组不会被代理包裹，而是track[tuple, 3]之后直接返回函数，然后执行
     expect(tupleRef.value[3]()).toBe(0)
     tupleRef.value[4].value++
+    // track [tupleRef, 4]
+    // 获取值res是ref对象，然后判断target和key类型，满足【数组&索引key】条件，所以不会自动解包
+    // 因此这里手动解包取value，track ref.dep后，返回获取到的值
     expect(tupleRef.value[4].value).toBe(1)
+    // TODO: 总结：反正不管嵌套层级多深，遇到对象都会被上层代理转换为代理对象返回（除非get到的对象是ref对象，那就另外处理，可能解包可能不解包）
   })
 
   it('should keep symbols', () => {
@@ -215,6 +273,8 @@ describe('reactivity/ref', () => {
     ]
 
     keys.forEach(key => {
+      // 只要注意objRef.value === objRef._value === reactive(obj)即可，其它和上面总结了
+      // 因为key对应的是内建Symbol，所以在代理获取到值res的时候会直接返回，所以这里和直接用obj[key]访问没什么两样，是完全相等的，而且也不会有任何的track行为发生
       expect(objRef.value[key]).toStrictEqual(obj[key])
     })
   })
