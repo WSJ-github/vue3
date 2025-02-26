@@ -139,6 +139,7 @@ class RefImpl<T = any> {
     const oldValue = this._rawValue
     const useDirectValue =
       this[ReactiveFlags.IS_SHALLOW] ||
+      // TODO: 看ref.spec.ts的test('ref should preserve value shallow/readonly-ness')
       isShallow(newValue) ||
       isReadonly(newValue)
     newValue = useDirectValue ? newValue : toRaw(newValue)
@@ -346,7 +347,20 @@ export function toRefs<T extends object>(object: T): ToRefs<T> {
   if (__DEV__ && !isProxy(object)) {
     warn(`toRefs() expects a reactive object but received a plain one.`)
   }
+  // object即使是代理，如果target是数组类型，那么Array.isArray也会返回true
   const ret: any = isArray(object) ? new Array(object.length) : {}
+  // 在有副作用触发的情况下：
+  // ***情况1***
+  // 如果object是数组的代理对象，那么会先访问数组的Symbol.iterator获取迭代器，此时track [raw(object), ARRAY_ITERATE_KEY]
+  // 然后for...in...遍历key，触发handler ownKeys，然后会track [raw(object), 'length']
+  // 然后在propertyToRef(object, key)中会访问object[key]，此时track [raw(object), key]
+  // TODO: 因为是数组所以如果访问的obj[key]值是ref，那么不会解包直接返回
+
+  // ***情况2***
+  // 如果object是对象的代理对象，那么会遍历对象的key，触发handler ownKeys，然后会track [raw(object), ITERATE_KEY]
+  // propertyToRef(object, key)中会访问object[key]，那么会track [raw(object), key]
+  // TODO: 但是如果object[key]是ref，此时会解包，所以应该还是会创建ObjectRefImpl实例包裹
+  // 补充：如果在外面访问这个ObjectRefImpl实例.value，那么会track [raw(object), key] & track raw(object).key.dep（即ref.dep）
   for (const key in object) {
     ret[key] = propertyToRef(object, key)
   }
@@ -365,6 +379,7 @@ class ObjectRefImpl<T extends object, K extends keyof T> {
 
   get value() {
     const val = this._object[this._key]
+    // 访问原对象上对应属性，如果有值那么当前this._value对应却值，否则就取默认值
     return (this._value = val === undefined ? this._defaultValue! : val)
   }
 
@@ -373,6 +388,7 @@ class ObjectRefImpl<T extends object, K extends keyof T> {
   }
 
   get dep(): Dep | undefined {
+    // 获取原对象targetMap对应key收集的依赖
     return getDepFromReactive(toRaw(this._object), this._key)
   }
 }
@@ -457,6 +473,7 @@ export function toRef(
   if (isRef(source)) {
     return source
   } else if (isFunction(source)) {
+    // 返回GetterRefImpl实例对象，类ref，代理函数的访问
     return new GetterRefImpl(source) as any
   } else if (isObject(source) && arguments.length > 1) {
     return propertyToRef(source, key!, defaultValue)

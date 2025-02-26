@@ -280,21 +280,26 @@ describe('reactivity/ref', () => {
   })
 
   test('unref', () => {
+    // 实现：isRef(ref) ? ref.value : ref
+    // 所以这里如果入参是一个ref对象，那么会触发track ref.dep
     expect(unref(1)).toBe(1)
     expect(unref(ref(1))).toBe(1)
   })
 
   test('shallowRef', () => {
+    // 入参不会转为代理对象，即sref._value是原对象，不会经过toReactive处理
     const sref = shallowRef({ a: 1 })
     expect(isReactive(sref.value)).toBe(false)
 
     let dummy
     effect(() => {
+      // track sref.dep
       dummy = sref.value.a
     })
     expect(dummy).toBe(1)
 
-    sref.value = { a: 2 }
+    // trigger sref.dep
+    sref.value = { a: 2 } // 同上理
     expect(isReactive(sref.value)).toBe(false)
     expect(dummy).toBe(2)
   })
@@ -311,15 +316,18 @@ describe('reactivity/ref', () => {
     expect(dummy).toBe(1) // should not trigger yet
 
     // force trigger
+    // 强行sref.dep.trigger
     triggerRef(sref)
     expect(dummy).toBe(2)
   })
 
   test('shallowRef isShallow', () => {
+    // 校验ReactiveFlags.IS_SHALLOW字段
     expect(isShallow(shallowRef({ a: 1 }))).toBe(true)
   })
 
   test('isRef', () => {
+    // 校验ReactiveFlags.IS_REF字段
     expect(isRef(ref(1))).toBe(true)
     expect(isRef(computed(() => 1))).toBe(true)
 
@@ -329,24 +337,51 @@ describe('reactivity/ref', () => {
     expect(isRef({ value: 0 })).toBe(false)
   })
 
+  // TODO: 注意toRef和toRefs是有区别的，别用混了...
   test('toRef', () => {
     const a = reactive({
       x: 1,
     })
+    // ***情况1: 传入至少两个参数
+    // toRef实现还是蛮有意思的
+    // 这里传入两个参数
+    // 会调用propertyToRef方法把对象和属性key传入创建ObjectRefImpl对象实例，记为or并返回
+    // or实例内部会把这个 对象和key 保存起来作为实例属性
+    // 因为or实例是类ref实例，所以我们访问的时候比如x.value，会触发or.get value方法（这里or === x）
+    // 在or.get value方法中，会先获取原对象targetMap对应key收集的依赖，然后返回原对象上对应属性值
+    // 如果原对象上对应属性值不存在，那么就返回默认值
+    // or.set value方法同理，会设置原对象上对应属性值，然后触发对应代理对象属性上收集的依赖
     const x = toRef(a, 'x')
+    // 补充：注意如果传入的第一个参数是普通对象不是代理对象，也是直接返回原对象上对应属性值，而不会把入参转换为代理对象，但是这里只限情况1，因为情况3只有一个参数的情况是直接返回普通ref对象，因此会把第一个入参做处理
 
     const b = ref({ y: 1 })
 
+    // ***情况2: 传入一个ref对象作为参数
+    // 直接返回这个入参ref对象
     const c = toRef(b)
 
+    // ***情况3: 传入一个对象（普通对象or代理对象）参数（因为即使是普通对象，ref包裹之后也会变为代理对象，通过外层ref访问到的也是经过转换后的代理对象）
+    // 直接把参数传入ref，构建常规ref对象实例，即ref(b)
     const d = toRef({ z: 1 })
 
     expect(isRef(d)).toBe(true)
+    // 访问d.value
+    // track d.dep
+    // 返回d._value（对应创建ref对象时的入参对象，当然已经被toReactive处理过了），所以返回的是代理对象
+    // 继续访问代理对象的.z
+    // track [raw(<这个代理对象>), 'z']
+    // 返回值原对象上z属性，即1
     expect(d.value.z).toBe(1)
 
     expect(c).toBe(b)
 
+    // 类ref对象ObjectRefImpl对象实例也会通过isRef校验
     expect(isRef(x)).toBe(true)
+    // 访问ObjectRefImpl对象实例.value
+    // ObjectRefImpl实例和普通ref实例不太一样，内部不需要维护私有dep
+    // 而是直接代理访问到原对象上的属性值
+    // track [raw(a), 'x']
+    // 返回原对象上x属性值，即1
     expect(x.value).toBe(1)
 
     // source -> proxy
@@ -360,23 +395,28 @@ describe('reactivity/ref', () => {
     // reactivity
     let dummyX
     effect(() => {
+      // track [raw(a), 'x']
       dummyX = x.value
     })
     expect(dummyX).toBe(x.value)
 
     // mutating source should trigger effect using the proxy refs
+    // trigger [raw(a), 'x']
     a.x = 4
     expect(dummyX).toBe(4)
 
     // should keep ref
     const r = { x: ref(1) }
+    // 如果情况1需要对象+key是ref对象，那么直接返回这个代理对象
     expect(toRef(r, 'x')).toBe(r.x)
   })
 
   test('toRef on array', () => {
     const a = reactive(['a', 'b'])
     const r = toRef(a, 1)
+    // track [raw(a), 1]
     expect(r.value).toBe('b')
+    // trigger [raw(a), 1]
     r.value = 'c'
     expect(r.value).toBe('c')
     expect(a[1]).toBe('c')
@@ -385,6 +425,8 @@ describe('reactivity/ref', () => {
   test('toRef default value', () => {
     const a: { x: number | undefined } = { x: undefined }
     const x = toRef(a, 'x', 1)
+    // 因为入参a是普通对象，所以这里x.value === a.x，没有依赖收集过程
+    // 但是x.value返回undefined，or.get做了处理，会返回默认值，即第三个参数1
     expect(x.value).toBe(1)
 
     a.x = 2
@@ -396,26 +438,40 @@ describe('reactivity/ref', () => {
 
   test('toRef getter', () => {
     const x = toRef(() => 1)
+    // 用访问器模式代理函数访问罢了...
     expect(x.value).toBe(1)
     expect(isRef(x)).toBe(true)
     expect(unref(x)).toBe(1)
     //@ts-expect-error
+    // 不具备set访问器
     expect(() => (x.value = 123)).toThrow()
 
     expect(isReadonly(x)).toBe(true)
   })
 
   test('toRefs', () => {
+    // 入参是代理对象(不然开发环境会告警，因为那样意义不大，本来就是用来处理代理对象转ref的)
+    // 原理：
+    // 遍历对象属性or索引
+    // 把代理对象和各个遍历出来的key传入propertyToRef方法
+    // 从而创建一个个ObjectRefImpl实例对象（类ref，上面toRef有提过）
+    // 当然这里注意如果isRef(obj[key])，那么直接返回接着遍历下一个key即可
+    // 最后把它们依次装入与raw(obj)相同的数据结构中（对象or数组）返回
     const a = reactive({
       x: 1,
       y: 2,
     })
+    //  补充：前面提到过ObjectRefImpl实例对象其实就是一个类ref代理，本身不具备依赖收集功能，只是在实例属性中缓存了原对象的代理obj和key，在访问.value的时候代理访问罢了
 
+    // 这里结构出来的x和y都分别是ObjectRefImpl实例对象
     const { x, y } = toRefs(a)
 
     expect(isRef(x)).toBe(true)
     expect(isRef(y)).toBe(true)
+    // track [raw(a), 'x']
+    // 访问x.value实际就是访问a.x
     expect(x.value).toBe(1)
+    // track [raw(a), 'y']
     expect(y.value).toBe(2)
 
     // source -> proxy
@@ -433,15 +489,15 @@ describe('reactivity/ref', () => {
     // reactivity
     let dummyX, dummyY
     effect(() => {
-      dummyX = x.value
-      dummyY = y.value
+      dummyX = x.value // track [raw(a), 'x']
+      dummyY = y.value // track [raw(a), 'y']
     })
     expect(dummyX).toBe(x.value)
     expect(dummyY).toBe(y.value)
 
     // mutating source should trigger effect using the proxy refs
-    a.x = 4
-    a.y = 5
+    a.x = 4 // trigger [raw(a), 'x']
+    a.y = 5 // trigger [raw(a), 'y']
     expect(dummyX).toBe(4)
     expect(dummyY).toBe(5)
   })
@@ -458,14 +514,16 @@ describe('reactivity/ref', () => {
 
   test('toRefs reactive array', () => {
     const arr = reactive(['a', 'b', 'c'])
+    // 返回的refs是类ref数组，即ObjectRefImpl实例对象数组
     const refs = toRefs(arr)
 
+    // 结构对应
     expect(Array.isArray(refs)).toBe(true)
 
-    refs[0].value = '1'
+    refs[0].value = '1' // trigger [raw(arr), 0]
     expect(arr[0]).toBe('1')
 
-    arr[1] = '2'
+    arr[1] = '2' // trigger [raw(arr), 1]
     expect(refs[1].value).toBe('2')
   })
 
@@ -473,6 +531,8 @@ describe('reactivity/ref', () => {
     let value = 1
     let _trigger: () => void
 
+    // custom是CustomRefImpl实例，也是类ref
+    // 内部维护一个dep实例，把该实例的track和trigger暴露出来给用户自定义逻辑
     const custom = customRef((track, trigger) => ({
       get() {
         track()
@@ -496,7 +556,7 @@ describe('reactivity/ref', () => {
     // should not trigger yet
     expect(dummy).toBe(1)
 
-    _trigger!()
+    _trigger!() // 手动触发执行effect
     expect(dummy).toBe(2)
   })
 
@@ -506,33 +566,49 @@ describe('reactivity/ref', () => {
     const a = ref(obj)
     const spy1 = vi.fn(() => a.value)
 
+    // track a.dep
     effect(spy1)
 
+    // ref set中会判断新旧值是否相同，相同不会触发dep.trigger
     a.value = obj
     expect(spy1).toBeCalledTimes(1)
 
+    // 注意这里因为传入的obj本身就是proxy对象，所以内部会直接保留值，即b._rawValue === b._value === obj
     const b = shallowRef(obj)
     const spy2 = vi.fn(() => b.value)
 
+    // track b.dep
     effect(spy2)
 
+    // 新旧_rawValue都是代理对象，所以也不会trigger
     b.value = obj
     expect(spy2).toBeCalledTimes(1)
   })
 
+  // Ref应该保持值的浅/只读性
   test('ref should preserve value shallow/readonly-ness', () => {
     const original = {}
+    // 给original注册多个类型代理对象，然后这些不同类代理对象分别维护到reactiveMap & shallowReactiveMap & readonlyMap中
+    // 下次再给同一个对象注册代理对象时会优先从对应Map中获取...
     const r = reactive(original)
     const s = shallowReactive(original)
     const rr = readonly(original)
+
+    // 因为是普通ref（非浅ref），所以内部维护this._value时会去toReactive(original)，即创建代理对象
+    // 此时相当于时reactive(original)，然后因为前面该对象在reactiveMap中已经维护了该对象的代理对象，所以会直接返回
     const a = ref(original)
 
     expect(a.value).toBe(r)
 
+    // 具体去看class RefImpl类中的逻辑
+    // 这里触发 a.set，入参为s，因为isShallow(s)的缘故，所以newValue会直接使用代理值，即s
+    // 因此hasChanged判断新旧值时返回true，所以触发ref.dep.trigger，并且重新给this._value赋值为s
+    // 此时this._value === this._rawValue === s
     a.value = s
     expect(a.value).toBe(s)
     expect(a.value).not.toBe(r)
 
+    // 与上同理
     a.value = rr
     expect(a.value).toBe(rr)
     expect(a.value).not.toBe(r)
@@ -540,23 +616,29 @@ describe('reactivity/ref', () => {
 
   test('should not trigger when setting the same raw object', () => {
     const obj = {}
+    // r._rawValue === obj
+    // r._value === reactive(obj)
     const r = ref(obj)
     const spy = vi.fn()
-    effect(() => spy(r.value))
+    effect(() => spy(r.value)) // track r.dep
     expect(spy).toHaveBeenCalledTimes(1)
 
+    // this._rawValue 和 obj比较，因为相同，所以no trigger
     r.value = obj
     expect(spy).toHaveBeenCalledTimes(1)
   })
 
   test('toValue', () => {
+    // isFunction(source) ? source() : unref(source)
     const a = ref(1)
     const b = computed(() => a.value + 1)
     const c = () => a.value + 2
     const d = 4
 
     expect(toValue(a)).toBe(1)
+    // computed是类ref，computed.gettter执行，track a.dep
     expect(toValue(b)).toBe(2)
+    // c是函数，直接执行
     expect(toValue(c)).toBe(3)
     expect(toValue(d)).toBe(4)
   })
