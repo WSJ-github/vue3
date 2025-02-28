@@ -124,6 +124,8 @@ export class ReactiveEffect<T = any>
     this.flags |= EffectFlags.PAUSED // EffectFlags.PAUSED = 1000000
   }
 
+  // pause 对应 resume
+
   resume(): void {
     if (this.flags & EffectFlags.PAUSED) {
       this.flags &= ~EffectFlags.PAUSED
@@ -155,11 +157,12 @@ export class ReactiveEffect<T = any>
 
     if (!(this.flags & EffectFlags.ACTIVE)) {
       // stopped during cleanup
+      // 非活跃状态直接执行
       return this.fn()
     }
 
     this.flags |= EffectFlags.RUNNING
-    cleanupEffect(this)
+    cleanupEffect(this) // 执行当前effect实例上定义的cleanup函数（当然cleanup是外面给实例强加的，不是自带的）
     prepareDeps(this)
     const prevEffect = activeSub // 保存上一个活跃的effect
     const prevShouldTrack = shouldTrack // 保存上一个shouldTrack的值
@@ -196,9 +199,9 @@ export class ReactiveEffect<T = any>
 
   trigger(): void {
     if (this.flags & EffectFlags.PAUSED) {
-      pausedQueueEffects.add(this)
+      pausedQueueEffects.add(this) // 暂停的推入weakset队列pausedQueueEffects
     } else if (this.scheduler) {
-      this.scheduler()
+      this.scheduler() // computed effect会定义scheduler？其实就是一个普通函数？
     } else {
       this.runIfDirty()
     }
@@ -343,7 +346,12 @@ function cleanupDeps(sub: Subscriber) {
   sub.depsTail = tail
 }
 
+// 维护的link链上，link节点version和link.dep.version不一致 or link.dep是computed 并且 该computed刷新成功...
+// 待定
 function isDirty(sub: Subscriber): boolean {
+  // sub对应effect；
+  // 双向绑定
+  // sub.deps是个Link对象实例...或undefined
   for (let link = sub.deps; link; link = link.nextDep) {
     if (
       link.dep.version !== link.version ||
@@ -364,6 +372,7 @@ function isDirty(sub: Subscriber): boolean {
 
 /**
  * Returning false indicates the refresh failed
+ * 返回false表示刷新失败
  * @internal
  */
 export function refreshComputed(computed: ComputedRefImpl): undefined {
@@ -371,6 +380,7 @@ export function refreshComputed(computed: ComputedRefImpl): undefined {
     computed.flags & EffectFlags.TRACKING &&
     !(computed.flags & EffectFlags.DIRTY)
   ) {
+    // TRACKING状态 并且 非DIRTY状态 就直接return
     return
   }
   computed.flags &= ~EffectFlags.DIRTY // 清除dirty标志
@@ -383,8 +393,8 @@ export function refreshComputed(computed: ComputedRefImpl): undefined {
   }
   computed.globalVersion = globalVersion
 
-  const dep = computed.dep
-  computed.flags |= EffectFlags.RUNNING
+  const dep = computed.dep // computed本身就是类Ref对象，内部维护有自己的dep实例
+  computed.flags |= EffectFlags.RUNNING // computed 设置为running状态
   // In SSR there will be no render effect, so the computed has no subscriber
   // and therefore tracks no deps, thus we cannot rely on the dirty check.
   // Instead, computed always re-evaluate and relies on the globalVersion
@@ -401,7 +411,7 @@ export function refreshComputed(computed: ComputedRefImpl): undefined {
 
   const prevSub = activeSub
   const prevShouldTrack = shouldTrack
-  activeSub = computed
+  activeSub = computed // computed对象本身作为effect
   shouldTrack = true
 
   try {
@@ -444,6 +454,7 @@ function removeSub(link: Link, soft = false) {
     if (!prevSub && dep.computed) {
       // if computed, unsubscribe it from all its deps so this computed and its
       // value can be GCed
+      // 如果computed，则从所有依赖中取消订阅，以便此computed和其值可以被GCed
       dep.computed.flags &= ~EffectFlags.TRACKING
       for (let l = dep.computed.deps; l; l = l.nextDep) {
         // here we are only "soft" unsubscribing because the computed still keeps

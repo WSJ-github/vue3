@@ -50,6 +50,7 @@ export class Link {
 
   /**
    * Pointers for doubly-linked lists
+   * 双向链表的指针
    */
   nextDep?: Link
   prevDep?: Link
@@ -78,12 +79,14 @@ export class Dep {
   version = 0
   /**
    * Link between this dep and the current active effect
+   * 当前dep和当前活跃的effect之间的链接（即Link节点）
    */
   activeLink?: Link = undefined // 当前活跃的effect链接
 
   /**
    * Doubly linked list representing the subscribing effects (tail) 表示订阅效果的双链表（尾部）
-   * 订阅者链表的尾节点（维护effect链，即Link节点双向链表）
+   * 订阅者链表的【尾节点】（维护effect链，即Link节点双向链表）
+   * 表示当前dep收集的各个effect形成的link链
    */
   subs?: Link = undefined
 
@@ -92,6 +95,7 @@ export class Dep {
    * DEV only, for invoking onTrigger hooks in correct order
    * 翻译：表示订阅效果的双链表（头部）
    * 开发环境专用，用于在正确顺序中调用onTrigger钩子
+   * Link链头
    */
   subsHead?: Link
 
@@ -103,6 +107,7 @@ export class Dep {
 
   /**
    * Subscriber counter
+   * 即dep.subs链中link节点的数量，表示当前dep收集的effect依赖数量（effect.fn中用到当前dep对应的数据属性所以产生关联）
    */
   sc: number = 0 // 订阅者计数器
 
@@ -116,6 +121,15 @@ export class Dep {
    * 追踪收集effect依赖
    * @param debugInfo - 调试信息
    * @returns 返回Link实例，如果追踪失败则返回undefined
+   * 微总结：
+   * 1. 如果当前没有活跃的effect，或者不应该跟踪，或者【当前effect是计算属性】，则直接返回
+   * （TODO:疑问：计算属性不是也是个订阅者身份吗，或者说类似effect的存在，为什么这里副作用是computed就不收集了）
+   *  解答：因为这里的this.computed指的是dep.computed，说明dep是一个computed dep，是computed实例内部用来收集其它effect依赖的dep实例，所以如果活跃的effect就是computed本身的话，没必要自己收集自己，会出现循环依赖的问题...
+   * 2. 如果当前dep.activeLink为空或者当前activeLink.sub不等于activeSub，那么构建一个关联当前dep和activeSub的link节点，把该link节点插入到activeSub.deps链尾部，并且相应的调整link节点之间的探针指向，最后就是调用addSub(link)，把新link节点插入到dep.subs链尾部，这就构建好了新link节点关联的dep & effect的双边关系
+   * 3. 如果当前dep.activeLink不为空 且 this.activeLink.sub等于当前的activeSub，则说明当前link节点已经存在（指当前的dep&effect中），则直接同步版本，然后调整link节点在activeSub.deps链中的位置（活跃link插到尾部）
+   * 4. 最后返回当前活跃link节点
+   *
+   * 其实说白了还是没有link节点就构建，然后维护好当前dep和当前活跃的effect（即activeSub）之间的双向关系，正确调整dep.subs & activeSub.deps中的link节点位置，把这些link节点串联关系维护好
    */
   track(debugInfo?: DebuggerEventExtraInfo): Link | undefined {
     // 如果当前没有活跃的effect，或者不应该跟踪，或者当前effect是计算属性，则直接返回
@@ -124,11 +138,15 @@ export class Dep {
     }
 
     let link = this.activeLink
+    // link节点为空，或者link.sub不指向当前活跃的副作用（此时副作用一般指effect，effect相当于vue2中的watcher，都属于subscribe，订阅者，而dep，depandency，是收集依赖等待通知的发布者）
+    // 所以注意有一种情况：this.activeLink.sub !== activeSub，但是链中其实有其他link节点.sub === activeSub，意思就是之前收集过与activeSub关联的link节点，这里好像不会管，而是直接重新构建一个新的关联link节点，插入到dep.subs上
     if (link === undefined || link.sub !== activeSub) {
+      // activeSub只是一个effect实例，这里需要维护一个link节点链接effect&dep
       link = this.activeLink = new Link(activeSub, this)
 
       // add the link to the activeEffect as a dep (as tail)
       // 将link添加到activeEffect的deps链表中（作为尾部）
+      // 即调整activeSub.deps链，调整depsTail探针指向，因为需要把最新的link节点插入到deps链表尾部
       if (!activeSub.deps) {
         activeSub.deps = activeSub.depsTail = link
       } else {
@@ -137,17 +155,24 @@ export class Dep {
         activeSub.depsTail = link
       }
 
+      // 简述：顾名思义，把该link节点加入到当前dep.subs中（dep.subs即代表链条末尾）
       addSub(link)
     } else if (link.version === -1) {
+      // this.activeLink不为空 且 this.activeLink.sub等于当前的activeSub
+      // TODO: 所以此时link === activeLink
+
       // reused from last run - already a sub, just sync version
+      // 从上次运行重用 - 已经是订阅者，只需同步版本
       link.version = this.version
 
       // If this dep has a next, it means it's not at the tail - move it to the
       // tail. This ensures the effect's dep list is in the order they are
       // accessed during evaluation.
-      // 翻译：
       // 如果这个dep有下一个，则意味着它不在尾部 - 将其移动到尾部。
       // 这确保了effect的dep列表在它们被访问时按顺序排列。
+
+      // 而且说明当前activeSub.deps链中已经有该link节点了，且link节点还不在deps链的尾部，所以这里做个个移动操作
+      // link.nextDep指的是link.sub即当前activeSub维护的deps链中的下一个link节点，如果有，则把当前活跃link节点从activeSub.deps链中提出来，插到deps链的尾部去
       if (link.nextDep) {
         const next = link.nextDep
         next.prevDep = link.prevDep
@@ -161,6 +186,7 @@ export class Dep {
         activeSub.depsTail = link
 
         // this was the head - point to the new head
+        // TODO: 如果当前link节点是activeSub.deps链的头节点，则需要调整activeSub.deps链的头节点位置指向下一个link节点
         if (activeSub.deps === link) {
           activeSub.deps = next
         }
@@ -196,6 +222,10 @@ export class Dep {
         // subs are notified and batched in reverse-order and then invoked in
         // original order at the end of the batch, but onTrigger hooks should
         // be invoked in original order here.
+        // 翻译：
+        // 订阅者按照反序被通知和批处理，然后在批处理结束时按照原始顺序被调用，
+        // 但是onTrigger钩子应该在这里按照原始顺序被调用。
+        // 待补充：...
         for (let head = this.subsHead; head; head = head.nextSub) {
           if (head.sub.onTrigger && !(head.sub.flags & EffectFlags.NOTIFIED)) {
             head.sub.onTrigger(
@@ -215,9 +245,12 @@ export class Dep {
           // on its dep - it's called here instead of inside computed's notify
           // in order to reduce call stack depth.
           // 翻译：
-          // 如果notify()返回true，则这是一个计算属性。
-          // 也调用其dep的notify() - 在这里而不是在computed的notify()中调用，
-          // 以减少调用栈深度。
+          // 如果notify()返回true，说明这是一个computed。同时也要调用它的dep的notify方法 -
+          // 这里调用而不是在computed的notify内部调用是为了减少调用栈深度。
+          // TODO:补充：
+          // 因为computed可以作为订阅者，即类似effect，作为依赖被属性dep收集，同时其它effect使用computed的时候也会被computed.dep收集起来
+          // 此时dep充当发布者的角色，因此如果源头的属性dep发生变化，该dep.subs某个link是computed，那么会先调用computed.notify()执行computed effect
+          // 执行完后，返回computed.notify返回true，那么我们还需要递归触发computed.dep.notify()，即触发computed.dep收集起来的所有其它的effect依赖
           ;(link.sub as ComputedRefImpl).dep.notify()
         }
       }
@@ -229,17 +262,34 @@ export class Dep {
 
 function addSub(link: Link) {
   link.dep.sc++
+  // effect实例默认就是active&tracking状态
   if (link.sub.flags & EffectFlags.TRACKING) {
     const computed = link.dep.computed
-    // computed getting its first subscriber
-    // enable tracking + lazily subscribe to all its deps
+    // computed getting its first subscriber computed实例得到第一个订阅者（意思就是当前computed实例第一次被其它effect依赖，即被副作用函数effect.fn使用到）
+    // enable tracking + lazily subscribe to all its deps 启用追踪 + 懒惰订阅所有deps
+    // dep.computed存在，说明当前dep是computed实例内部维护的dep实例
+    // TODO: 因为computed实例本身既充当订阅者（维护deps链作为effect被其它属性dep收集），也充当发布者（维护dep实例收集依赖并在触发时trigger通知更新）
+    // !link.dep.subs说明当前dep还没有收集任何link节点，即没有被任何effect使用到，因为如果使用到就会构建link节点并且插入subs链中
     if (computed && !link.dep.subs) {
+      // 因为addSub调用的时候意味着当前dep实例准备收集sub入链中，或者说当前dep实例对应的数据被某个effect（通常是activeSub）使用到了
       computed.flags |= EffectFlags.TRACKING | EffectFlags.DIRTY
+      // TODO: computd.deps反应的是computed实例本身作为一个effect，cmoputed.fn执行时使用到其它响应性数据
+      // 被他们的属性dep收集起来（构建link节点并记录到dep.subs链中）的同时，自己的deps链也会记录这些数据属性dep实例到computed.deps链中
+      // 其实就是反应了dep/link/effect三者之间的关系，只不过这里computed实例充当effect的角色
       for (let l = computed.deps; l; l = l.nextDep) {
+        // TODO: 这里其实有点疑惑...
+        // 这里其实如果是computed.dep调用addSub方法的话，下面其实就是把关联的sub构成的link节点插到dep.subs末尾即可，然后正确调整该link节点的前后探针
+        // 但是这里又遍历的了收集了computed effect的那些数据属性dep，然后如果这些属性dep.subs的尾节点不是当前和computed effect关联的link节点，则需要把该link节点插入到这些属性dep.subs链的末尾
+        // 当然单纯这么做没问题，但是它这里没有调整当前link节点的前置探针，感觉可能会导致该属性dep的subs链断裂的问题....
         addSub(l)
       }
     }
 
+    // TODO: subs其实就是链的【尾节点】
+    // 下面的操作其实就是：
+    // 1. 把当前dep.subs的尾节点取出来（其实就是dep.subs本身）
+    // 2. 把当前的活跃link节点插入到dep.subs对应的link链中，并且插入到最后面，正确设置前后link节点首尾探针的指向
+    // 3. dep.subs指向链条【尾节点】，即最新的link节点
     const currentTail = link.dep.subs
     if (currentTail !== link) {
       link.prevSub = currentTail

@@ -24,6 +24,7 @@ export class EffectScope {
 
   private _isPaused = false
 
+  // 类似树形结构，1个parent，多个scopes，每个scope下收集了多个effects
   /**
    * only assigned by undetached scope
    * @internal
@@ -37,14 +38,17 @@ export class EffectScope {
   scopes: EffectScope[] | undefined
   /**
    * track a child scope's index in its parent's scopes array for optimized
+   * 记录子作用域在父作用域中的索引，用于优化删除
    * removal
    * @internal
    */
   private index: number | undefined
 
   constructor(public detached = false) {
+    // 这里activeEffectScope应该对应的是父作用域节点，而不是当前实例（也就是说现在在初始化当前scope实例对象，但是activeEffectScope是前一个活跃scope节点）
     this.parent = activeEffectScope
     if (!detached && activeEffectScope) {
+      // 所以index其实是当前scope实例在父scope实例收集的scopes数组中的索引
       this.index =
         (activeEffectScope.scopes || (activeEffectScope.scopes = [])).push(
           this,
@@ -60,11 +64,13 @@ export class EffectScope {
     if (this._active) {
       this._isPaused = true
       let i, l
+      // 停止所有子作用域
       if (this.scopes) {
         for (i = 0, l = this.scopes.length; i < l; i++) {
           this.scopes[i].pause()
         }
       }
+      // 停止所有当前scope收集的effects
       for (i = 0, l = this.effects.length; i < l; i++) {
         this.effects[i].pause()
       }
@@ -129,6 +135,7 @@ export class EffectScope {
   }
 
   stop(fromParent?: boolean): void {
+    // stop和pause还是有区别的
     if (this._active) {
       this._active = false
       let i, l
@@ -137,6 +144,7 @@ export class EffectScope {
       }
       this.effects.length = 0
 
+      // 停止所有当前scope收集的cleanup函数列表
       for (i = 0, l = this.cleanups.length; i < l; i++) {
         this.cleanups[i]()
       }
@@ -158,6 +166,7 @@ export class EffectScope {
           last.index = this.index!
         }
       }
+      // 断开当前scope与父scope的回溯连接
       this.parent = undefined
     }
   }

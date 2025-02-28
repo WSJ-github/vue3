@@ -52,7 +52,9 @@ export class ComputedRefImpl<T = any> implements Subscriber {
   /**
    * @internal
    */
-  //  computed和ref实例一样，内部自己维护一个dep对象
+  //  computed和ref实例一样，内部自己维护一个dep对象（因为isRef(computed实例)）
+  // TODO: 说明computed既会去收集别的effect依赖，也会把自己作为订阅者（即sub/effect）被别的属性dep收集起来，然后自己内部维护deps链
+  // 注意这里传入computed实例本身，让dep.computed = this，dep实例内部维护computed属性，让外界知道这是computed实例内部维护的dep实例
   readonly dep: Dep = new Dep(this)
   /**
    * @internal
@@ -65,6 +67,7 @@ export class ComputedRefImpl<T = any> implements Subscriber {
   readonly __v_isReadonly: boolean
   // TODO isolatedDeclarations ReactiveFlags.IS_READONLY
   // A computed is also a subscriber that tracks other deps
+  // 一个computed也是一个订阅者，它跟踪其他依赖（类似effect维护的deps）
   /**
    * @internal
    */

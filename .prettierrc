@@ -1,5 +1,9 @@
 {
   "semi": false,
   "singleQuote": true,
-  "arrowParens": "avoid"
+  "arrowParens": "avoid",
+  "yaml": {
+    "parser": "yaml",
+    "formatOnSave": false
+  }
 }
