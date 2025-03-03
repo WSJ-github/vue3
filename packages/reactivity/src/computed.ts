@@ -119,7 +119,7 @@ export class ComputedRefImpl<T = any> implements Subscriber {
    * @internal
    */
   notify(): true | void {
-    this.flags |= EffectFlags.DIRTY
+    this.flags |= EffectFlags.DIRTY // 标识当前computed dirty状态
     if (
       !(this.flags & EffectFlags.NOTIFIED) &&
       // avoid infinite self recursion

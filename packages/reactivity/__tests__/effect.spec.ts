@@ -39,8 +39,8 @@ describe('reactivity/effect', () => {
   it('should observe basic properties', () => {
     let dummy
     const counter = reactive({ num: 0 })
+    // 最常规的情况
     effect(() => (dummy = counter.num))
-
     expect(dummy).toBe(0)
     counter.num = 7
     expect(dummy).toBe(7)
@@ -52,8 +52,25 @@ describe('reactivity/effect', () => {
     effect(() => (dummy = counter.num1 + counter.num1 + counter.num2))
 
     expect(dummy).toBe(0)
+    // 这里给两个不同属性赋值，不同dep.trigger会触发两次effect吧？✅
     counter.num1 = counter.num2 = 7
     expect(dummy).toBe(21)
+  })
+  it('should observe multiple properties: effect run twice！', () => {
+    let dummy
+    const counter = reactive({ num1: 0, num2: 0 })
+    const fnSpy = vi.fn(
+      () => (dummy = counter.num1 + counter.num1 + counter.num2),
+    )
+    effect(fnSpy) // 第一次
+
+    expect(dummy).toBe(0)
+    counter.num1 = counter.num2 = 7 // 第二 & 第三次
+    expect(dummy).toBe(21)
+    // effect 运行了3次...😁
+    // 验证了修改响应性数据，并不会像v2那样通过schedule&queue批处理微任务统一触发依赖
+    // 而是同步轮立马执行，比如上面第二次和第三次，在counter.num2 = 7赋值被代理捕获时，立马触发对应dep收集的依赖，此时counter.num1 = 7还没执行
+    expect(fnSpy).toHaveBeenCalledTimes(3)
   })
 
   it('should handle multiple effects', () => {
@@ -64,6 +81,9 @@ describe('reactivity/effect', () => {
 
     expect(dummy1).toBe(0)
     expect(dummy2).toBe(0)
+    // 两个effect会在同一轮按顺序执行，执行顺序是链头先执行（收集是尾到头，执行是头到尾，这里的头尾相对于dep.subs）
+    // 会先被统一收集到batchedSub & batchedComputed链上，通过effect.next维护链条关系
+    // 然后endBatch最后一次统一执行链上的effect，即effect.run()
     counter.num++
     expect(dummy1).toBe(1)
     expect(dummy2).toBe(1)
@@ -72,6 +92,10 @@ describe('reactivity/effect', () => {
   it('should observe nested properties', () => {
     let dummy
     const counter = reactive({ nested: { num: 0 } })
+    // track [raw(counter), 'nested']
+    // track [raw(counter.nested), 'num']
+    // 所以不管是修改counter.nested还是counter.nested.num，都会触发该effect
+    // 注意：reactiveMap记录所有被reactive包裹封装过的对象，所以不会重复给同一个对象创建多个代理对象
     effect(() => (dummy = counter.nested.num))
 
     expect(dummy).toBe(0)

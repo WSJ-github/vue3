@@ -139,7 +139,9 @@ export class Dep {
 
     let link = this.activeLink
     // link节点为空，或者link.sub不指向当前活跃的副作用（此时副作用一般指effect，effect相当于vue2中的watcher，都属于subscribe，订阅者，而dep，depandency，是收集依赖等待通知的发布者）
-    // 所以注意有一种情况：this.activeLink.sub !== activeSub，但是链中其实有其他link节点.sub === activeSub，意思就是之前收集过与activeSub关联的link节点，这里好像不会管，而是直接重新构建一个新的关联link节点，插入到dep.subs上
+    // ❌所以注意有一种情况：this.activeLink.sub !== activeSub，但是链中其实有其他link节点.sub === activeSub，意思就是之前收集过与activeSub关联的link节点，这里好像不会管，而是直接重新构建一个新的关联link节点，插入到dep.subs上
+    // ✅对于this.activeLink.sub !== activeSub，只会发生在当前dep没有收集过当前activeSub的情况，因为如果是activeSub二次触发，此时activeSub内部会遍历activeSub.deps链，然后依次把所有link.dep.version置为-1，并且link.dep.activeLink指向当前link，而link.prevActiveLink指向原activeLink(以便后续恢复)
+    // 所以这里if条件通过意味着当前dep没有收集过activeSub，即当前dep&activeSub之间没有建立过link
     if (link === undefined || link.sub !== activeSub) {
       // activeSub只是一个effect实例，这里需要维护一个link节点链接effect&dep
       link = this.activeLink = new Link(activeSub, this)
@@ -148,16 +150,18 @@ export class Dep {
       // 将link添加到activeEffect的deps链表中（作为尾部）
       // 即调整activeSub.deps链，调整depsTail探针指向，因为需要把最新的link节点插入到deps链表尾部
       if (!activeSub.deps) {
+        // 说明当前link是唯一节点
         activeSub.deps = activeSub.depsTail = link
       } else {
         link.prevDep = activeSub.depsTail
         activeSub.depsTail!.nextDep = link
         activeSub.depsTail = link
       }
-
+      // 上面的逻辑把link节点维护到activeSub.deps链中
       // 简述：顾名思义，把该link节点加入到当前dep.subs中（dep.subs即代表链条末尾）
       addSub(link)
     } else if (link.version === -1) {
+      // 说明是对应effect二次触发，因为effect二次触发之前会调用prepareDeps把相关link.version都置为-1
       // this.activeLink不为空 且 this.activeLink.sub等于当前的activeSub
       // TODO: 所以此时link === activeLink
 
@@ -171,8 +175,9 @@ export class Dep {
       // 如果这个dep有下一个，则意味着它不在尾部 - 将其移动到尾部。
       // 这确保了effect的dep列表在它们被访问时按顺序排列。
 
-      // 而且说明当前activeSub.deps链中已经有该link节点了，且link节点还不在deps链的尾部，所以这里做个个移动操作
+      // 而且说明当前activeSub.deps链中已经有该link节点了，且link节点还不在deps链的尾部，所以这里做个移动操作
       // link.nextDep指的是link.sub即当前activeSub维护的deps链中的下一个link节点，如果有，则把当前活跃link节点从activeSub.deps链中提出来，插到deps链的尾部去
+      // TODO: 注意这里只调整link节点在sub.deps链中的位置，而没有调整link节点在dep.subs链中的位置
       if (link.nextDep) {
         const next = link.nextDep
         next.prevDep = link.prevDep
@@ -209,13 +214,16 @@ export class Dep {
 
   // 触发依赖更新
   trigger(debugInfo?: DebuggerEventExtraInfo): void {
-    this.version++
+    this.version++ // TODO: dep.version递增变化时机（实际是否执行想关联的effect.run会根据dep.version是否变化来决定）
     globalVersion++
     this.notify(debugInfo)
   }
 
   // 通知订阅者
   notify(debugInfo?: DebuggerEventExtraInfo): void {
+    // TODO: 使用startBatch和endBatch控制的原因：
+    // 因为在这两个函数之间可能会有其它dep实例trigger&notify，此时全局标识会batchDepth++，然而endBatch真正执行时对于--batchDepth > 0是直接return得
+    // 所以这就是批处理，只在最后一次endBatch真正去执行 batchedComputed & batchedSub链收集的所有effect
     startBatch()
     try {
       if (__DEV__) {
@@ -225,7 +233,7 @@ export class Dep {
         // 翻译：
         // 订阅者按照反序被通知和批处理，然后在批处理结束时按照原始顺序被调用，
         // 但是onTrigger钩子应该在这里按照原始顺序被调用。
-        // 待补充：...
+        // 待补充：...用户自定义传入的调试信息？
         for (let head = this.subsHead; head; head = head.nextSub) {
           if (head.sub.onTrigger && !(head.sub.flags & EffectFlags.NOTIFIED)) {
             head.sub.onTrigger(
@@ -239,6 +247,8 @@ export class Dep {
           }
         }
       }
+      // TODO: 从尾到头触发收集到的依赖的notify，当然后续实际执行的时候其实是反向的，因为要构建batchedSub或batchedComputed链后续才会最终执行
+      // 简述：批处理收集是从尾到头，实际执行是从头到尾
       for (let link = this.subs; link; link = link.prevSub) {
         if (link.sub.notify()) {
           // if notify() returns `true`, this is a computed. Also call notify
@@ -249,12 +259,28 @@ export class Dep {
           // 这里调用而不是在computed的notify内部调用是为了减少调用栈深度。
           // TODO:补充：
           // 因为computed可以作为订阅者，即类似effect，作为依赖被属性dep收集，同时其它effect使用computed的时候也会被computed.dep收集起来
-          // 此时dep充当发布者的角色，因此如果源头的属性dep发生变化，该dep.subs某个link是computed，那么会先调用computed.notify()执行computed effect
+          // 此时dep充当发布者的角色，因此如果源头的属性dep发生变化，该dep.subs某个link是computed，那么会先调用computed.notify()执行computed effect，即computed.fn
           // 执行完后，返回computed.notify返回true，那么我们还需要递归触发computed.dep.notify()，即触发computed.dep收集起来的所有其它的effect依赖
           ;(link.sub as ComputedRefImpl).dep.notify()
+          // V2原理过程回顾：
+          // v2Computed实现比较简单，每个computed对应到vue实例上维护一个computed watcher，都是lazy的，即访问到才会去执行getter函数，v2中是访问时触发computed watcher.evaluate，pushTarget，让getter中访问到的属性dep收集当前computed watcher
+          // 然后popTarger，此时对应属性dep已经收集了computed watcher，同理cwatcher内部已经维护了对应的dep实例列表，此时判断watcher栈上是否还有watcher，如果有（一般是render watcher），那么继续执行cwatcher.depend，让这些属性dep去主动收集render watcher
+          // 所以其实rerender过程中，是最初的属性dep触发的，触发cwatcher.update & renderWatcher.update，然后等待scheduler调度执行
+          // V3原理：
+          // 每个computed对应一个ComputedRefImpl实例，该实例具备三个主要功能，自己充当普通属性通过dep依赖收集，充当effect维护deps link链，充当ref；
+          // v2&v3 computed原理对比：
+          // 1. 都是lazy的，访问到才会去执行内部维护的getter函数
+          // 2. 都是通过属性dep去触发watcher依赖，但是v2是通过属性dep直接触发all watcher，而v3是属性dep先触发computed effect，接着再递归触发computed.dep收集起来的所有其它的effect依赖
         }
       }
     } finally {
+      // TODO:
+      // 当响应式数据发生变化时,会调用 dep.notify()
+      // dep.notify() 会遍历所有订阅的effect,调用它们的 notify() 方法
+      // effect的 notify() 会把自己放入批处理队列(batchedSub或batchedComputed)中
+      // 最终在 endBatch() 中:
+      // 先执行所有computed effect
+      // 再执行普通effect队列中的每个effect的 trigger() 方法,这才是真正执行effect函数的地方
       endBatch()
     }
   }
@@ -277,7 +303,7 @@ function addSub(link: Link) {
       // 被他们的属性dep收集起来（构建link节点并记录到dep.subs链中）的同时，自己的deps链也会记录这些数据属性dep实例到computed.deps链中
       // 其实就是反应了dep/link/effect三者之间的关系，只不过这里computed实例充当effect的角色
       for (let l = computed.deps; l; l = l.nextDep) {
-        // TODO: 这里其实有点疑惑...
+        // TODO: 这里其实有点疑惑...🤔
         // 这里其实如果是computed.dep调用addSub方法的话，下面其实就是把关联的sub构成的link节点插到dep.subs末尾即可，然后正确调整该link节点的前后探针
         // 但是这里又遍历的了收集了computed effect的那些数据属性dep，然后如果这些属性dep.subs的尾节点不是当前和computed effect关联的link节点，则需要把该link节点插入到这些属性dep.subs链的末尾
         // 当然单纯这么做没问题，但是它这里没有调整当前link节点的前置探针，感觉可能会导致该属性dep的subs链断裂的问题....
