@@ -411,12 +411,14 @@ function isDirty(sub: Subscriber): boolean {
 /**
  * Returning false indicates the refresh failed
  * 返回false表示刷新失败
+ * TODO: 其实主要逻辑就是让computed作为effect，执行computed getter，然后等着被其它dep收集
  * @internal
  */
 export function refreshComputed(computed: ComputedRefImpl): undefined {
   if (
-    // computed作为effect，即被其它属性dep调用notify方法时，会标识EffectFlags.DIRTY（初始默认值也是）
-    // EffectFlags.TRACKING在computed.dep首次addSub的时候标记，即computed.dep首次收集其它effect时
+    // computed作为effect，即被其它属性dep调用notify方法时，会标识EffectFlags.DIRTY（初始默认值也是） 和 EffectFlags.NOTIFIED
+    // EffectFlags.TRACKING在computed.dep首次addSub的时候标记，即computed.dep首次收集其它effect时会被标记上
+    // EffectFlags.DIRTY 是computed默认状态，或者 首次收集effect时跟上面触发时机一样，也会带上这个标识
     computed.flags & EffectFlags.TRACKING &&
     !(computed.flags & EffectFlags.DIRTY)
   ) {
@@ -429,6 +431,7 @@ export function refreshComputed(computed: ComputedRefImpl): undefined {
   // last refresh.
   // 当自上次刷新以来没有发生任何反应变化时，全局版本快速路径。
   // 目前发现，dep.trigger时会globalVersion++
+  // computed.globalVersion的默认值是【current globalVersion - 1】，所以computed第一次track的时候也不会在这里被return
   if (computed.globalVersion === globalVersion) {
     return
   }
@@ -442,7 +445,7 @@ export function refreshComputed(computed: ComputedRefImpl): undefined {
   // fast path above for caching.
   if (
     // 所有dep.version（属性dep｜computed dep｜ref dep）默认值为0，
-    // 对于computed dep来说，触发computed effect的时候会递归触发cdep.notify，让cdep.version++
+    // 对于dep来说，触发computed effect的时候会递归触发cdep.notify，让dep.version++
     dep.version > 0 &&
     !computed.isSSR &&
     computed.deps &&
@@ -462,8 +465,9 @@ export function refreshComputed(computed: ComputedRefImpl): undefined {
 
   try {
     prepareDeps(computed)
-    const value = computed.fn(computed._value)
+    const value = computed.fn(computed._value) // computed getter接收入参是旧值，computed初始时_value为undefined
     if (dep.version === 0 || hasChanged(value, computed._value)) {
+      // cdep没trigger 或者 本次重新接孙啊computed值有变化，那么就更新cmoputed内部维护的_value值，并且对应的cdep.version++
       computed._value = value
       dep.version++
     }

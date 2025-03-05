@@ -161,7 +161,12 @@ export class Dep {
       // 简述：顾名思义，把该link节点加入到当前dep.subs中（dep.subs即代表链条末尾）
       addSub(link)
     } else if (link.version === -1) {
-      // 说明是对应effect二次触发，因为effect二次触发之前会调用prepareDeps把相关link.version都置为-1
+      // TODO:
+      // 说明是对应effect二次触发，因为effect二次触发之前会调用prepareDeps把当前effect相关link.version都置为-1
+      // 并且: link.prevActiveLink = link.dep.activeLink; link.dep.activeLink = link;
+      // 这些预处理之后，后续如果effect.fn执行过程中，当前dep还能track到，那么就会执行下面的逻辑，把对应link.version恢复，并且调整link节点在activeSub.deps链中的位置
+      // 后续effect.fn执行结束后，还会遍历自己的deps链，把那些link.version为-1的link节点从activeSub.deps链中移除，并且link.dep.subs链中也会移除该link节点
+
       // this.activeLink不为空 且 this.activeLink.sub等于当前的activeSub
       // TODO: 所以此时link === activeLink
 
@@ -295,7 +300,7 @@ function addSub(link: Link) {
     // enable tracking + lazily subscribe to all its deps 启用追踪 + 懒惰订阅所有deps
     // dep.computed存在，说明当前dep是computed实例内部维护的dep实例
     // TODO: 因为computed实例本身既充当订阅者（维护deps链作为effect被其它属性dep收集），也充当发布者（维护dep实例收集依赖并在触发时trigger通知更新）
-    // !link.dep.subs说明当前dep还没有收集任何link节点，即没有被任何effect使用到，因为如果使用到就会构建link节点并且插入subs链中
+    // !link.dep.subs说明当前dep还没有收集任何link节点，即没有被任何effect使用到，因为如果使用到就会构建link节点并且插入subs链中，即说明这个dep(computed dep)第一次收集依赖（即effect）
     if (computed && !link.dep.subs) {
       // 因为addSub调用的时候意味着当前dep实例准备收集sub入链中，或者说当前dep实例对应的数据被某个effect（通常是activeSub）使用到了
       computed.flags |= EffectFlags.TRACKING | EffectFlags.DIRTY

@@ -43,6 +43,12 @@ export interface WritableComputedOptions<T, S = T> {
 /**
  * @private exported by @vue/reactivity for Vue core use, but not exported from
  * the main vue package
+ *
+ * computed特性：
+ * 1. 收集其它effect依赖，通过computed.dep
+ * 2. 作为effect，让其它dep收集，维护computed.deps维护关联link链
+ * 3. 类似ref，暴露value
+ * 4. 是lazy，用到才去计算值，即用到才会去执行getter fn
  */
 export class ComputedRefImpl<T = any> implements Subscriber {
   /**
@@ -79,11 +85,11 @@ export class ComputedRefImpl<T = any> implements Subscriber {
   /**
    * @internal
    */
-  flags: EffectFlags = EffectFlags.DIRTY
+  flags: EffectFlags = EffectFlags.DIRTY // computed默认状态
   /**
    * @internal
    */
-  globalVersion: number = globalVersion - 1
+  globalVersion: number = globalVersion - 1 // 默认值是全局版本号 - 1，以便第一次getter -> refreshComputed 时不会被中断
   /**
    * @internal
    */
@@ -107,7 +113,7 @@ export class ComputedRefImpl<T = any> implements Subscriber {
   _warnRecursive?: boolean
 
   constructor(
-    public fn: ComputedGetter<T>,
+    public fn: ComputedGetter<T>, // 其实就是getter，这里参数命名为fn是为了统一computed作为effect时的行为
     private readonly setter: ComputedSetter<T> | undefined,
     isSSR: boolean,
   ) {
@@ -133,20 +139,26 @@ export class ComputedRefImpl<T = any> implements Subscriber {
   }
 
   get value(): T {
+    // 注意这里返回link节点
     const link = __DEV__
       ? this.dep.track({
           target: this,
           type: TrackOpTypes.GET,
           key: 'value',
         })
-      : this.dep.track()
-    // 判断是否需要刷新（即dirty标识）
-    // 如果需要，那么计算出最新值，并且让响应性数据收集当前computedRef依赖
-    // 如果不需要，那么直接返回缓存值
+      : this.dep.track() // 此时cmoputed收集effect
+    /**
+     * 猜测逻辑：
+     * 判断是否需要刷新（即dirty标识）
+     * 如果需要，那么计算出最新值，并且让响应性数据收集当前computedRef依赖
+     * 如果不需要，那么直接返回缓存值
+     */
+    // TODO:实际主要逻辑：根据computed的状态（即computed.flags），决定是否执行computed effect（即执行computed getter），其实目的就是为了刷新computed._value
+    // 并且让执行过程中涉及的属性dep能把当前computed effect收集起来，后续这些属性dep trigger的时候，会顺带把当前computed.subs中收集的使用computed的其它effect一起统一触发
     refreshComputed(this)
     // sync version after evaluation
     if (link) {
-      link.version = this.dep.version
+      link.version = this.dep.version // 同步link节点version号，因为执行refreshComputed过程中如果computed effect执行了，那么对应computed.dep.version会++
     }
     return this._value
   }
