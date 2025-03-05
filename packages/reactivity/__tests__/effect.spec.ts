@@ -111,6 +111,7 @@ describe('reactivity/effect', () => {
     effect(() => (dummy = obj.prop))
 
     expect(dummy).toBe('value')
+    // trigger[raw(obj), 'prop'], trigger[raw(obj), ITERATE_KEY]
     delete obj.prop
     expect(dummy).toBe(undefined)
   })
@@ -118,6 +119,7 @@ describe('reactivity/effect', () => {
   it('should observe has operations', () => {
     let dummy
     const obj = reactive<{ prop?: string | number }>({ prop: 'value' })
+    // handler.has, track[raw(obj), 'prop'], 不管key是否存在，都会收集该key值依赖
     effect(() => (dummy = 'prop' in obj))
 
     expect(dummy).toBe(true)
@@ -129,18 +131,30 @@ describe('reactivity/effect', () => {
 
   it('should observe properties on the prototype chain', () => {
     let dummy
-    const counter = reactive<{ num?: number }>({ num: 0 })
+    const counter = reactive<{ num?: number; wsj?: string }>({ num: 0 })
     const parentCounter = reactive({ num: 2 })
+    // 最后原型链是维护在原对象上的，而不是代理对象上的（即raw(counter）的原型是parentCounter)
     Object.setPrototypeOf(counter, parentCounter)
+    // track [raw(counter), 'num']（原始对象上有就不会触发原型代理对象上的handler.get）
     effect(() => (dummy = counter.num))
 
     expect(dummy).toBe(0)
+    // trigger[raw(counter), 'num'], trigger[raw(counter), ITERATE_KEY]
+    // effect重新执行
     delete counter.num
+    // 因为原对象上无num属性，会往原型上查找，track[raw(parentCounter), 'num']（当然这里即使是访问原型上没有的属性key，应该也会track，下面会验证这一点）
     expect(dummy).toBe(2)
     parentCounter.num = 4
     expect(dummy).toBe(4)
-    counter.num = 3
+    counter.num = 3 // trigger[raw(counter), 'num'], trigger[raw(counter), ITERATE_KEY]
     expect(dummy).toBe(3)
+
+    // 验证：访问原型上没有的属性key，也会track进对应的weakMap(即targetMap)
+    let dummy2
+    effect(() => (dummy2 = counter.wsj)) // track[raw(counter), 'wsj']
+    expect(dummy2).toBe(undefined)
+    counter.wsj = 'wsj' // trigger[raw(counter), 'wsj'] 触发依赖
+    expect(dummy2).toBe('wsj')
   })
 
   it('should observe has operations on the prototype chain', () => {
@@ -151,9 +165,11 @@ describe('reactivity/effect', () => {
     effect(() => (dummy = 'num' in counter))
 
     expect(dummy).toBe(true)
-    delete counter.num
+    delete counter.num // trigger[raw(counter), 'num'], trigger[raw(counter), ITERATE_KEY]
+    // 依赖重新执行
+    // track[raw(parentCounter), 'num']
     expect(dummy).toBe(true)
-    delete parentCounter.num
+    delete parentCounter.num // trigger[raw(parentCounter), 'num'], trigger[raw(parentCounter), ITERATE_KEY]
     expect(dummy).toBe(false)
     counter.num = 3
     expect(dummy).toBe(true)
@@ -171,40 +187,68 @@ describe('reactivity/effect', () => {
       },
     })
     Object.setPrototypeOf(obj, parent)
-    effect(() => (dummy = obj.prop))
-    effect(() => (parentDummy = parent.prop))
+    // track [raw(parent), 'prop']
+    // track [raw(obj), 'prop']
+    // 访问一个原对象上没有的属性key，会让原对象和原型对象都track该key
+    // Proxy特性，具体可以看笔记中proxy章节：
+    // 代理的原型也是代理的情况，如果原对象上没有该属性，会触发 原型代理对象的handler.get & 原对象代理的handler.get，触发次数及时机：
+    // 1. 原型对象handler.get
+    // 2. 原对象handler.get
+    // 3. 原型对象handler.set
+    // 所以其实不管原对象还是原型对象上都会track到
+    effect(() => (dummy = obj.prop)) // effect-1
+    effect(() => (parentDummy = parent.prop)) // effect-2 track[raw(parent), 'prop']
 
     expect(dummy).toBe(undefined)
     expect(parentDummy).toBe(undefined)
+    // TODO:
+    // hiddenValue = 666 // 步骤1
+    // 根据代理对象继承的特性，正常来说设置原对象上没有的属性时，会触发obj.handler.set & parent.handler.set
+    // 因此按照这个逻辑来说会trigger[raw(obj), 'prop'] & trigger[raw(parent), 'prop']，但是这里步骤1&2都失败了
+    // 因为在handler.set内部做了一层判断处理，判断target === toRaw(receiver)的时候才trigger，所以不会触发后者
+    // 但是注意：实际上是一句触发obj.handler.set & parent.handler.set了，只是内部限制了trigger而已
+    // 而且特别注意：因为obj原型上有prop属性的get&set访问器，所以这里设置obj.prop时，并不会在原对象上设置prop属性，而是执行原型对象set方法设置prop值
+    // 所以这里hiddenValue也等于4，触发effect-1访问obj.prop时其实也是访问原型代理，去原型对象上取
     obj.prop = 4
     expect(dummy).toBe(4)
+    expect(hiddenValue).toBe(4) // 补充：so
+    // expect(parentDummy).toBe(666) // 步骤2 error❌
+
     // this doesn't work, should it?
     // expect(parentDummy).toBe(4)
     parent.prop = 2
-    expect(dummy).toBe(2)
+    expect(dummy).toBe(2) //（接上）这也是为什么dummy === 2，而不等于4的原因
+    expect(hiddenValue).toBe(2) // 补充*2
     expect(parentDummy).toBe(2)
   })
 
   it('should observe function call chains', () => {
     let dummy
     const counter = reactive({ num: 0 })
-    effect(() => (dummy = getNum()))
+    effect(() => (dummy = getNum())) // track[raw(counter), 'num']
 
     function getNum() {
       return counter.num
     }
 
     expect(dummy).toBe(0)
-    counter.num = 2
+    counter.num = 2 // trigger[raw(counter), 'num']
     expect(dummy).toBe(2)
   })
 
   it('should observe iteration', () => {
     let dummy
     const list = reactive(['Hello'])
+    // 数组的join方法被代理封装过，调用封装过的join方法
+    // track[raw(list), ARRAY_ITERATE_KEY]  通过数组迭代key收集effect
+    // 如果list非浅代理，那么把raw（list.map(toReactive)，把所有索引值都转换为reactive，返回新数组
+    // 再用这个新数组实际调用join方法
     effect(() => (dummy = list.join(' ')))
 
     expect(dummy).toBe('Hello')
+    // TODO:
+    // 常规触发：trigger[raw(list), 'length'], trigger[raw(list), TriggerOpTypes.ADD, raw(list).length]
+    // 附加触发：trigger[raw(self), ARRAY_ITERATE_KEY]
     list.push('World!')
     expect(dummy).toBe('Hello World!')
     list.shift()
@@ -214,9 +258,12 @@ describe('reactivity/effect', () => {
   it('should observe implicit array length changes', () => {
     let dummy
     const list = reactive(['Hello'])
-    effect(() => (dummy = list.join(' ')))
+    effect(() => (dummy = list.join(' '))) // track[raw(list), ARRAY_ITERATE_KEY]
 
     expect(dummy).toBe('Hello')
+    // 常规触发：trigger[raw(list), TriggerOpTypes.ADD, 1, 'World!']
+    // 附加触发：trigger[raw(self), ARRAY_ITERATE_KEY]，trigger[raw(list), 'length']
+    // 只要是数组&索引，都会trigger[raw(self), ARRAY_ITERATE_KEY]，看情况如果是新增元素，那么也会trigger[raw(list), 'length']
     list[1] = 'World!'
     expect(dummy).toBe('Hello World!')
     list[3] = 'Hello!'
@@ -230,9 +277,12 @@ describe('reactivity/effect', () => {
     effect(() => (dummy = list.join(' ')))
 
     expect(dummy).toBe(' World!')
+    // 因为索引为0的元素是undefined，所以这里会trigger[raw(list), TriggerOpTypes.ADD, 0, 'Hello']，是TriggerOpTypes.ADD而不是TriggerOpTypes.SET
+    // 常规trigger过程中，只要key是数组索引其实都会附加trigger[raw(self), ARRAY_ITERATE_KEY]，所以这里triggerType显得没那么重要
+    // 只是对于数组trigger来说，如果是TriggerOpTypes.ADD的话会多附加trigger[raw(self), 'length']
     list[0] = 'Hello'
     expect(dummy).toBe('Hello World!')
-    list.pop()
+    list.pop() // 同理，数组代理会发生length减小，对应length-1索引元素置空，所以也会相应触发对应的trigger
     expect(dummy).toBe('Hello')
   })
 
@@ -241,24 +291,30 @@ describe('reactivity/effect', () => {
     const numbers = reactive<Record<string, number>>({ num1: 3 })
     effect(() => {
       dummy = 0
+      // 迭代对象key，会触发numbers.handler.ownKeys -> track[raw(numbers),TrackOpTypes.ITERATE, ITERATE_KEY]
+      // 当然如果这里的对象是数组类型的话，会触发track[raw(numbers), 'length']
       for (let key in numbers) {
-        dummy += numbers[key]
+        dummy += numbers[key] // track[raw(numbers), key]
       }
     })
 
     expect(dummy).toBe(3)
+    // 设置原对象上没有的属性，会触发 trigger[raw(numbers),TriggerOpTypes.ADD, 'num2', 4]
+    // 因为type是ADD，而且target是普通对象，所以附加trigger[raw(self), ITERATE_KEY]
     numbers.num2 = 4
     expect(dummy).toBe(7)
-    delete numbers.num1
+    delete numbers.num1 // type是DELETE，附加触发trigger[raw(self), ITERATE_KEY]
     expect(dummy).toBe(4)
   })
 
   it('should observe symbol keyed properties', () => {
+    // 对于Symbol作为属性key，只要Symbol不是内置Symbol，那么就和常规属性一样track
+    // 当然常规属性中不包括一些特殊属性（比如__proto__...）
     const key = Symbol('symbol keyed prop')
     let dummy, hasDummy
     const obj = reactive<{ [key]?: string }>({ [key]: 'value' })
-    effect(() => (dummy = obj[key]))
-    effect(() => (hasDummy = key in obj))
+    effect(() => (dummy = obj[key])) // track[raw(obj), key]
+    effect(() => (hasDummy = key in obj)) // obj.handler.has, track[raw(obj), TrackOpTypes.HAS,key]
 
     expect(dummy).toBe('value')
     expect(hasDummy).toBe(true)
@@ -292,7 +348,7 @@ describe('reactivity/effect', () => {
       key in obj
     })
     effect(spy)
-    expect(spy).toHaveBeenCalledTimes(1)
+    expect(spy).toHaveBeenCalledTimes(1) // 因为放入effect中的fn会立马执行一次
 
     obj[key] = false
     expect(spy).toHaveBeenCalledTimes(1)
@@ -302,14 +358,14 @@ describe('reactivity/effect', () => {
     const key = Symbol()
     let dummy
     const array: any = reactive([1, 2, 3])
-    effect(() => (dummy = array[key]))
+    effect(() => (dummy = array[key])) // 即使没有定义对应属性，也track[raw(array), key]
 
     expect(dummy).toBe(undefined)
     array.pop()
     array.shift()
     array.splice(0, 1)
     expect(dummy).toBe(undefined)
-    array[key] = 'value'
+    array[key] = 'value' // trigger[raw(array), key]
     array.length = 0
     expect(dummy).toBe('value')
   })
@@ -320,6 +376,8 @@ describe('reactivity/effect', () => {
 
     let dummy
     const obj = reactive({ func: oldFunc })
+    // track[raw(obj), 'func']
+    // 其实属性key是什么不重要，属性值是函数也不是很重要，正常track就好
     effect(() => (dummy = obj.func))
 
     expect(dummy).toBe(oldFunc)
@@ -336,6 +394,7 @@ describe('reactivity/effect', () => {
     })
 
     let dummy
+    // track[raw(obj), 'b']，track[raw(obj), 'a']
     effect(() => (dummy = obj.b))
     expect(dummy).toBe(1)
     obj.a++
@@ -351,6 +410,8 @@ describe('reactivity/effect', () => {
     })
 
     let dummy
+    // track[raw(obj), 'b'], track[raw(obj), 'a']
+    // 因为只要是effect收集过程中访问到的具备收集依赖能力的代理对象都会把effect收集到
     effect(() => (dummy = obj.b()))
     expect(dummy).toBe(1)
     obj.a++
@@ -366,8 +427,10 @@ describe('reactivity/effect', () => {
     effect(getSpy)
     effect(hasSpy)
 
-    expect(getDummy).toBe('value')
-    expect(hasDummy).toBe(true)
+    expect(getDummy).toBe('value') // track[raw(obj), 'prop']
+    expect(hasDummy).toBe(true) // track[raw(obj), 'prop']
+    // obj.handler.set会触发
+    // 但是内部会限制新旧值相同，从而不会trigger
     obj.prop = 'value'
     expect(getSpy).toHaveBeenCalledTimes(1)
     expect(hasSpy).toHaveBeenCalledTimes(1)
@@ -391,7 +454,7 @@ describe('reactivity/effect', () => {
     effect(() => (dummy = obj.prop))
 
     expect(dummy).toBe(undefined)
-    toRaw(obj).prop = 'value'
+    toRaw(obj).prop = 'value' // 不通过代理访问，肯定不会trigger啦！
     expect(dummy).toBe(undefined)
   })
 

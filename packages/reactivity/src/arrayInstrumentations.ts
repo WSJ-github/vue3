@@ -350,7 +350,15 @@ function noTracking(
 ) {
   pauseTracking() // 暂时暂停effect的追踪，shouldTrack = false
   startBatch()
-  const res = (toRaw(self) as any)[method].apply(self, args) // 注意这里传入apply方法的self还是数组代理对象
+  // 注意这里传入apply方法的self还是数组代理对象
+  // 使用toRaw(self)即原数组对象来调用方法的目的是不要产生循环依赖，不要递归触发代理的同一个方法
+  // TODO: 这里其实涉及到method原始实现了，比如method === 'push'的时候，具体平台内部是如何实现this&args入参之间的操作的
+  // 即会触发this(这里是self，也就是原数组对象的代理对象)的哪些handler方法，我不得而知
+  // 但是通过ds-r1模型询问，回复是内部会修改数组length & 对应索引位置推入值，我觉得挺合理的
+  // 所以应该会触发常规的：trigger[raw(self), 'length'] & trigger[raw(self), TriggerOpTypes.ADD ,raw(self).length]
+  // 因为target是数组，并且第三个参数是索引值，所以在trigger中会附加触发trigger[raw(self), ARRAY_ITERATE_KEY]🐮
+  // 对应测试用例effect.spec.ts的test('should observe iteration')
+  const res = (toRaw(self) as any)[method].apply(self, args)
   endBatch()
   resetTracking()
   return res

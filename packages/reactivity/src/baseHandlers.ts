@@ -125,7 +125,7 @@ class BaseReactiveHandler implements ProxyHandler<Target> {
       isRef(target) ? target : receiver,
     )
 
-    // 过滤掉Symbol和某些原型属性，即直接返回（不需要收集依赖）
+    // 过滤掉内置Symbol和某些原型属性，即直接返回（不需要收集依赖）
     // TODO: ref.spec.ts的test('should keep symbols')
     if (isSymbol(key) ? builtInSymbols.has(key) : isNonTrackableKeys(key)) {
       return res
@@ -227,6 +227,7 @@ class MutableReactiveHandler extends BaseReactiveHandler {
 
     // don't trigger if target is something up in the prototype chain of original
     // 如果target是原始对象的prototype链上的某个对象，则不触发（因为此时receiver对应的是原始对象，或者原始对象的代理，而target的代理只是原始对象原型链上的“父元素”罢了）
+    // TODO: effect.spec.ts('should observe inherited property accessors')测试
     if (target === toRaw(receiver)) {
       if (!hadKey) {
         // 如果key不存在，则触发add操作
